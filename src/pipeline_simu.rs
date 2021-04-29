@@ -1,8 +1,8 @@
-use std::rc::Rc;
 use crate::storage::Element;
 use std::boxed::Box;
+use std::rc::Rc;
 
-pub trait Tickable{}
+pub trait Tickable {}
 
 pub struct PipelineSimulator<'a> {
     pub cycle: i64,
@@ -13,7 +13,7 @@ impl<'a> PipelineSimulator<'a> {
     pub fn new() -> PipelineSimulator<'a> {
         PipelineSimulator {
             cycle: 0,
-            stages: vec!(),
+            stages: vec![],
         }
     }
 

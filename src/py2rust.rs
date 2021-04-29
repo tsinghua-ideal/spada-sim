@@ -1,6 +1,5 @@
+use crate::gemm::{CsrTuple, GEMM};
 use pyo3::{prelude::*, types::PyModule};
-use crate::gemm::{GEMM, CsrTuple};
-
 
 pub fn load_pickled_gemms(gemm_fp: &str, gemm_nm: &str) -> PyResult<GEMM> {
     let code = r#"
@@ -44,15 +43,16 @@ def retrieve_pickled_csr(pickle_gemm_fp, pickle_gemm_name):
     let module_name = "retrieve_pickled_csr";
 
     Python::with_gil(|py| {
-        let load_gemm_from_path = PyModule::from_code(
-            py, code, file_name, module_name).unwrap();
-        let csr_tuple: CsrTuple = 
-            load_gemm_from_path.getattr("retrieve_pickled_csr").unwrap()
-            .call1((gemm_fp, gemm_nm)).unwrap()
-            .extract().unwrap();
+        let load_gemm_from_path = PyModule::from_code(py, code, file_name, module_name).unwrap();
+        let csr_tuple: CsrTuple = load_gemm_from_path
+            .getattr("retrieve_pickled_csr")
+            .unwrap()
+            .call1((gemm_fp, gemm_nm))
+            .unwrap()
+            .extract()
+            .unwrap();
         // println!("csr_tuple:\n {:#?}", csr_tuple);
         let gemm = GEMM::new(gemm_nm, csr_tuple);
         Ok(gemm)
     })
-
 }
