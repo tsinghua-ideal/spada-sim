@@ -1,5 +1,5 @@
 use crate::pipeline_simu::Tickable;
-use crate::storage::{Element, Storage, StorageAPI};
+use crate::storage::{Element, CsrMatStorage, StorageAPI};
 use std::cmp::{max, min};
 use std::collections::VecDeque;
 
@@ -12,7 +12,7 @@ struct SBLane {
 }
 
 pub struct StreamBuffer<'a> {
-    dram: &'a mut Storage,
+    dram: &'a mut CsrMatStorage,
     lanes: Vec<SBLane>,
 }
 

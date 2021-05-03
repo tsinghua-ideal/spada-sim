@@ -94,7 +94,7 @@ pub trait StorageAPI {
     fn write(&mut self, rows: &mut Vec<CsrRow>) -> Result<Vec<usize>, StorageError>;
 }
 
-pub struct Storage {
+pub struct CsrMatStorage {
     pub data: Vec<f64>,
     pub indptr: Vec<usize>,
     pub indices: Vec<usize>,
@@ -102,7 +102,7 @@ pub struct Storage {
     pub write_count: usize,
 }
 
-impl StorageAPI for Storage {
+impl StorageAPI for CsrMatStorage {
     fn read(
         &mut self,
         row_ptr: usize,
@@ -124,7 +124,7 @@ impl StorageAPI for Storage {
             return Ok(CsrRow {
                 rowptr: row_ptr,
                 data: self.data[s..t].to_vec(),
-                indptr: self.indptr[s..t].to_vec(),
+                indptr: self.indices[s..t].to_vec(),
             });
         } else {
             return Err(StorageError::ReadEmptyRowError(format!(
@@ -149,17 +149,17 @@ impl StorageAPI for Storage {
     }
 }
 
-impl Storage {
-    pub fn init_with_gemm(gemm: GEMM) -> (Storage, Storage) {
+impl CsrMatStorage {
+    pub fn init_with_gemm(gemm: GEMM) -> (CsrMatStorage, CsrMatStorage) {
         (
-            Storage {
+            CsrMatStorage {
                 data: gemm.a.data().to_vec(),
                 indptr: gemm.a.indptr().as_slice().unwrap().to_vec(),
                 indices: gemm.a.indices().to_vec(),
                 read_count: 0,
                 write_count: 0,
             },
-            Storage {
+            CsrMatStorage {
                 data: gemm.b.data().to_vec(),
                 indptr: gemm.b.indptr().as_slice().unwrap().to_vec(),
                 indices: gemm.b.indices().to_vec(),
@@ -181,17 +181,95 @@ impl Storage {
     }
 }
 
-pub struct LRUCache {
+
+pub struct VectorStorage {
+    pub data: HashMap<usize, CsrRow>,
+    pub read_count: usize,
+    pub write_count: usize,
+}
+
+impl StorageAPI for VectorStorage {
+    fn read(&mut self, row_ptr: usize, col_s: usize, ele_num: usize) -> Result<CsrRow, StorageError> {
+        match self.data.get(&row_ptr) {
+            Some(csrrow) => {
+                let cur_row_pos = csrrow.indptr[row_ptr];
+                let end_row_pos = csrrow.indptr[row_ptr + 1];
+                if col_s + ele_num <= csrrow.data.len() {
+                    self.read_count += csrrow.size();
+                    return Ok(CsrRow {
+                        rowptr: csrrow.rowptr,
+                        data: csrrow.data[col_s..col_s+ele_num].to_vec(),
+                        indptr: csrrow.indptr[col_s..col_s+ele_num].to_vec(),
+                    });
+                } else {
+                    return Err(StorageError::ReadEmptyRowError(format!(
+                        "Invalid col_pos: {}..{} in row {}",
+                        col_s, col_s + ele_num, csrrow.rowptr
+                    )));
+                }
+            }
+            None => {
+                return Err(StorageError::ReadOverBoundError(format!(
+                    "Invalid rowptr: {}",
+                    row_ptr
+                )))
+            }
+        }
+    }
+
+    fn write(&mut self, rows: &mut Vec<CsrRow>) -> Result<Vec<usize>, StorageError> {
+        let mut indptrs = vec![];
+        for row in rows.iter_mut() {
+            let indptr = row.rowptr;
+            indptrs.push(indptr);
+            self.data.insert(indptr, row.clone());
+            self.write_count += row.size();
+        }
+
+        return Ok(indptrs);
+    }
+}
+
+impl VectorStorage {
+    pub fn new() -> VectorStorage {
+        VectorStorage{
+            data: HashMap::new(),
+            read_count: 0,
+            write_count: 0,
+        }
+    }
+
+    pub fn read_row(&mut self, row_ptr: usize) -> Result<CsrRow, StorageError> {
+        match self.data.get(&row_ptr) {
+            Some(csrrow) => {
+                self.read_count += csrrow.size();
+                return Ok(csrrow.clone());
+            },
+            None => {
+                return Err(StorageError::ReadOverBoundError(format!(
+                    "Invalid rowptr: {}",
+                    row_ptr
+                )))
+            }
+        }
+    }
+}
+
+
+pub struct LRUCache<'a> {
     pub cache_size: usize,
     pub word_byte: usize,
     pub capability: usize,
     pub cur_num: usize,
     pub rowmap: HashMap<usize, CsrRow>,
     pub lru_queue: VecDeque<usize>,
+    pub output_base_addr: usize,
+    pub B_mem: &'a mut CsrMatStorage,
+    pub psum_mem: &'a mut VectorStorage, // TODO
 }
 
-impl LRUCache {
-    pub fn new(cache_size: usize, word_byte: usize) -> LRUCache {
+impl<'a> LRUCache<'a> {
+    pub fn new(cache_size: usize, word_byte: usize, output_base_addr: usize, B_mem: &'a mut CsrMatStorage, psum_mem: &'a mut VectorStorage) -> LRUCache<'a> {
         LRUCache {
             cache_size: cache_size,
             word_byte: word_byte,
@@ -199,6 +277,9 @@ impl LRUCache {
             cur_num: 0,
             rowmap: HashMap::new(),
             lru_queue: VecDeque::new(),
+            output_base_addr: output_base_addr,
+            B_mem: B_mem,
+            psum_mem: psum_mem,
         }
     }
 
@@ -210,7 +291,7 @@ impl LRUCache {
             self.rowmap.insert(csrrow.rowptr, csrrow);
         } else {
             if let Err(err) = self.freeup_space(self.cur_num + num - self.capability) {
-                panic!(err);
+                panic!("{}", err);
             }
             self.cur_num += num;
             self.lru_queue.push_back(csrrow.rowptr);
@@ -219,8 +300,13 @@ impl LRUCache {
     }
 
     pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
-        while self.lru_queue.len() > 0 && (self.capability - self.cur_num < space_required) {
+        while self.lru_queue.len() > 0 && (self.cur_num + space_required > self.capability) {
+        // while self.lru_queue.len() > 0 && (self.capability - self.cur_num < space_required) {
             let popid = self.lru_queue.pop_front().unwrap();
+            if self.is_psum_row(popid) {
+                let popped_csrrow = self.rowmap.remove(&popid).unwrap();
+                self.psum_mem.write(&mut vec![popped_csrrow,]).unwrap();
+            }
             self.cur_num -= self.rowmap.remove(&popid).unwrap().size();
         }
         if self.capability - self.cur_num < space_required {
@@ -230,7 +316,7 @@ impl LRUCache {
         }
     }
 
-    pub fn read(&mut self, rowid: usize) -> Option<CsrRow> {
+    pub fn read_cache(&mut self, rowid: usize) -> Option<CsrRow> {
         if self.rowmap.contains_key(&rowid) {
             self.lru_queue
                 .remove(self.lru_queue.iter().position(|&x| x == rowid).unwrap());
@@ -252,5 +338,28 @@ impl LRUCache {
         } else {
             return None;
         }
+    }
+
+    pub fn read(&mut self, rowid: usize) -> Option<CsrRow> {
+        match self.read_cache(rowid) {
+            Some(csrrow) => Some(csrrow),
+            None => {if self.is_psum_row(rowid) { match self.psum_mem.read_row(rowid) {
+                    Ok(csrrow) => {
+                        self.write(csrrow.clone());
+                        Some(csrrow)
+                    },
+                    Err(_) => None,
+                }}else { match self.B_mem.read_row(rowid) {
+                    Ok(csrrow) => {
+                        self.write(csrrow.clone());
+                        Some(csrrow)
+                    },
+                    Err(_) => None,
+            }}}
+        }
+    }
+
+    pub fn is_psum_row(&self, rowid: usize) -> bool {
+        return rowid >= self.output_base_addr;
     }
 }
