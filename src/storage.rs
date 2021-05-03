@@ -264,8 +264,8 @@ pub struct LRUCache<'a> {
     pub rowmap: HashMap<usize, CsrRow>,
     pub lru_queue: VecDeque<usize>,
     pub output_base_addr: usize,
-    pub B_mem: &'a mut CsrMatStorage,
-    pub psum_mem: &'a mut VectorStorage, // TODO
+    pub b_mem: &'a mut CsrMatStorage,
+    pub psum_mem: &'a mut VectorStorage,
 }
 
 impl<'a> LRUCache<'a> {
@@ -278,7 +278,7 @@ impl<'a> LRUCache<'a> {
             rowmap: HashMap::new(),
             lru_queue: VecDeque::new(),
             output_base_addr: output_base_addr,
-            B_mem: B_mem,
+            b_mem: B_mem,
             psum_mem: psum_mem,
         }
     }
@@ -305,9 +305,11 @@ impl<'a> LRUCache<'a> {
             let popid = self.lru_queue.pop_front().unwrap();
             if self.is_psum_row(popid) {
                 let popped_csrrow = self.rowmap.remove(&popid).unwrap();
+                self.cur_num -= popped_csrrow.size();
                 self.psum_mem.write(&mut vec![popped_csrrow,]).unwrap();
+            } else {
+                self.cur_num -= self.rowmap.remove(&popid).unwrap().size();
             }
-            self.cur_num -= self.rowmap.remove(&popid).unwrap().size();
         }
         if self.capability - self.cur_num < space_required {
             return Err(format!("Not enough space for {}", space_required));
@@ -349,7 +351,7 @@ impl<'a> LRUCache<'a> {
                         Some(csrrow)
                     },
                     Err(_) => None,
-                }}else { match self.B_mem.read_row(rowid) {
+                }}else { match self.b_mem.read_row(rowid) {
                     Ok(csrrow) => {
                         self.write(csrrow.clone());
                         Some(csrrow)
@@ -361,5 +363,12 @@ impl<'a> LRUCache<'a> {
 
     pub fn is_psum_row(&self, rowid: usize) -> bool {
         return rowid >= self.output_base_addr;
+    }
+
+    pub fn swapout(&mut self, rowid: usize) {
+        if self.rowmap.contains_key(&rowid) {
+            self.lru_queue.remove(self.lru_queue.iter().position(|&x| x==rowid).unwrap());
+            self.cur_num -= self.rowmap.remove(&rowid).unwrap().size();
+        }
     }
 }
