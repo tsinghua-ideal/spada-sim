@@ -301,8 +301,13 @@ impl<'a> LRUCache<'a> {
 
     pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
         while self.lru_queue.len() > 0 && (self.cur_num + space_required > self.capability) {
-        // while self.lru_queue.len() > 0 && (self.capability - self.cur_num < space_required) {
-            let popid = self.lru_queue.pop_front().unwrap();
+            let mut popid: usize;
+            loop {
+                popid = self.lru_queue.pop_front().unwrap();
+                if self.rowmap.contains_key(&popid) {
+                    break;
+                }
+            }
             if self.is_psum_row(popid) {
                 let popped_csrrow = self.rowmap.remove(&popid).unwrap();
                 self.cur_num -= popped_csrrow.size();
@@ -332,8 +337,7 @@ impl<'a> LRUCache<'a> {
 
     pub fn consume(&mut self, rowid: usize) -> Option<CsrRow> {
         if self.rowmap.contains_key(&rowid) {
-            self.lru_queue
-                .remove(self.lru_queue.iter().position(|&x| x == rowid).unwrap());
+            // self.lru_queue.remove(self.lru_queue.iter().position(|&x| x == rowid).unwrap());
             let csrrow = self.rowmap.remove(&rowid).unwrap();
             self.cur_num -= csrrow.size();
             return Some(csrrow);
@@ -361,14 +365,14 @@ impl<'a> LRUCache<'a> {
         }
     }
 
-    pub fn is_psum_row(&self, rowid: usize) -> bool {
-        return rowid >= self.output_base_addr;
-    }
-
     pub fn swapout(&mut self, rowid: usize) {
         if self.rowmap.contains_key(&rowid) {
-            self.lru_queue.remove(self.lru_queue.iter().position(|&x| x==rowid).unwrap());
+            // self.lru_queue.remove(self.lru_queue.iter().position(|&x| x==rowid).unwrap());
             self.cur_num -= self.rowmap.remove(&rowid).unwrap().size();
         }
+    }
+
+    pub fn is_psum_row(&self, rowid: usize) -> bool {
+        return rowid >= self.output_base_addr;
     }
 }
