@@ -15,16 +15,15 @@ struct PE {
 }
 
 pub struct OmegaTraffic<'a> {
-    done: bool,
+    no_new_product: bool,
     reduction_window: [usize; 2],
     reuse_hist: Vec<[usize; 2]>,
     pe_num: usize,
     lane_num: usize,
     unalloc_row: usize,
-    unalloc_col: usize,
     fiber_cache: LRUCache<'a>,
     pes: Vec<PE>,
-    A_mem: &'a mut CsrMatStorage,
+    a_mem: &'a mut CsrMatStorage,
     output_base_addr: usize,
     output_tracker: HashMap<usize, Vec<usize>>,
     merge_queue: Vec<usize>,
@@ -44,13 +43,12 @@ impl<'a> OmegaTraffic<'a> {
         // Init from the inner-product dataflow.
         // Can be changed to be adaptive.
         OmegaTraffic {
-            done: false,
+            no_new_product: false,
             reduction_window: [1, lane_num],
             reuse_hist: vec![[0, 0]; lane_num],
             pe_num: pe_num,
             lane_num: lane_num,
             unalloc_row: 0,
-            unalloc_col: 0,
             fiber_cache: LRUCache::new(cache_size, word_byte, output_base_addr, b_mem, psum_mem),
             pes: vec![
                 PE {
@@ -63,7 +61,7 @@ impl<'a> OmegaTraffic<'a> {
             ],
             output_base_addr: output_base_addr,
             output_tracker: HashMap::new(),
-            A_mem: a_mem,
+            a_mem,
             merge_queue: vec![],
         }
     }
@@ -73,9 +71,9 @@ impl<'a> OmegaTraffic<'a> {
         let mut rowid = self.unalloc_row;
         for _ in 0..row_num {
             loop {
-                if rowid >= (self.A_mem.indptr.len() - 1) {
+                if rowid >= (self.a_mem.indptr.len() - 1) {
                     return None;
-                } else if self.A_mem.indptr[rowid + 1] - self.A_mem.indptr[rowid] == 0 {
+                } else if self.a_mem.indptr[rowid + 1] - self.a_mem.indptr[rowid] == 0 {
                     rowid += 1;
                 } else {
                     rowids.push(rowid);
@@ -91,8 +89,8 @@ impl<'a> OmegaTraffic<'a> {
 
     fn is_col_start_valid(&self, rowids: &Vec<usize>, cur_col_s: usize) -> bool {
         for rowid in rowids.iter() {
-            if (*rowid >= self.A_mem.indptr.len() - 1)
-                || (self.A_mem.indptr[*rowid + 1] - self.A_mem.indptr[*rowid] < cur_col_s)
+            if (*rowid >= self.a_mem.indptr.len() - 1)
+                || (self.a_mem.indptr[*rowid + 1] - self.a_mem.indptr[*rowid] <= cur_col_s)
             {
                 continue;
             } else {
@@ -103,9 +101,13 @@ impl<'a> OmegaTraffic<'a> {
         return false;
     }
 
+    fn get_read_element_num(&self, rowid: usize, cur_col_s: usize, window_width: usize) -> usize {
+        min(window_width, self.a_mem.indptr[rowid+1] - self.a_mem.indptr[rowid] - cur_col_s)
+    }
+
     fn adjust_window(&mut self) {}
 
-    fn assign_jobs(&mut self) {
+    fn assign_jobs(&mut self) -> bool {
         // Update work mode.
         for pe_no in 0..self.pe_num {
             let pe = &self.pes[pe_no];
@@ -115,6 +117,7 @@ impl<'a> OmegaTraffic<'a> {
                 for row in pe.cur_rows.iter() {
                     self.merge_queue.push(*row);
                 }
+                // Clear the current jobs.
                 self.pes[pe_no].cur_rows.clear();
                 self.pes[pe_no].cur_col = 0;
             }
@@ -134,8 +137,13 @@ impl<'a> OmegaTraffic<'a> {
             }
         }
 
+        // No job to assign if no multiplication and merge workloads.
+        if self.no_new_product && psums_num == 0 {
+            return true;
+        }
+
         // Calculate the required merge psums number.
-        let mut merge_pe_num = (psums_num + self.lane_num) / self.lane_num;
+        let mut merge_pe_num = (psums_num + self.lane_num - 1) / self.lane_num;
 
         // Assign jobs to PEs.
         for pe_no in 0..self.pe_num {
@@ -154,7 +162,7 @@ impl<'a> OmegaTraffic<'a> {
                             self.pes[pe_no].reduction_window = self.reduction_window.clone();
                         }
                         None => {
-                            self.done = true;
+                            self.no_new_product = true;
                         }
                     }
                 } else {
@@ -165,6 +173,8 @@ impl<'a> OmegaTraffic<'a> {
                 }
             }
         }
+
+        return false;
     }
 
     fn fetch_window_data(&mut self, pe_no: usize) -> (Vec<usize>, Vec<Vec<(usize, f64)>>, Vec<Vec<CsrRow>>) {
@@ -199,10 +209,8 @@ impl<'a> OmegaTraffic<'a> {
             rowidxs = pe.cur_rows.clone();
             let mut broadcast_cache: HashMap<usize, CsrRow> = HashMap::new();
             for rowidx in rowidxs.iter() {
-                let r_sfs = match self.A_mem.read(*rowidx, pe.cur_col, pe.reduction_window[1]) {
-                    Ok(csrrow) => csrrow,
-                    Err(err) => CsrRow::new(*rowidx),
-                };
+                let ele_num = min(pe.reduction_window[1], self.a_mem.indptr[*rowidx+1] - self.a_mem.indptr[*rowidx] - pe.cur_col);
+                let r_sfs = self.a_mem.read(*rowidx, pe.cur_col, ele_num).unwrap();
                 let mut fbs = vec![];
                 let mut sfs = vec![];
                 for (colid, value) in r_sfs.enumerate() {
@@ -231,14 +239,14 @@ impl<'a> OmegaTraffic<'a> {
 
     fn compute_a_window(
         &self,
-        rowidxs: Vec<usize>,
+        rowidxs: &Vec<usize>,
         scaling_factors: Vec<Vec<(usize, f64)>>,
         fibers: Vec<Vec<CsrRow>>,
     ) -> Vec<CsrRow> {
         let mut psums = vec![];
         for (rowidx, sfs, fbs) in izip!(rowidxs, scaling_factors, fibers) {
             // Compute psum.
-            let mut psum = CsrRow::new(rowidx);
+            let mut psum = CsrRow::new(*rowidx);
             for (sf, fb) in izip!(sfs, fbs) {
                 for (colid, value) in izip!(fb.indptr, fb.data) {
                     match psum.indptr.binary_search(&colid) {
@@ -256,10 +264,10 @@ impl<'a> OmegaTraffic<'a> {
         return psums;
     }
 
-    fn write_psum(&mut self, output_fibers: Vec<CsrRow>) {
-        for mut output_fiber in output_fibers {
+    fn write_psum(&mut self, rowidxs: Vec<usize>, output_fibers: Vec<CsrRow>) {
+        for (rowidx, mut output_fiber) in rowidxs.into_iter().zip(output_fibers.into_iter()) {
             self.output_tracker
-                .entry(output_fiber.rowptr)
+                .entry(rowidx)
                 .or_default()
                 .push(self.output_base_addr);
             output_fiber.rowptr = self.output_base_addr;
@@ -269,19 +277,52 @@ impl<'a> OmegaTraffic<'a> {
     }
 
     pub fn execute(&mut self) {
-        while !self.done {
-            // Assign rows.
+        loop {
+            // Adjust window according to previous execution.
             self.adjust_window();
-            self.assign_jobs();
 
-            // Each PE execute a window.
+            // Assign jobs to PEs.
+            let done = self.assign_jobs();
+
+            // If no jobs can be assigned, end execution.
+            if done {
+                break;
+            }
+
+            // Each PE executes a window.
             for i in 0..self.pe_num {
                 let (rowidxs, scaling_factors, fibers) = self.fetch_window_data(i);
-                let output_fibers = self.compute_a_window(rowidxs, scaling_factors, fibers);
-                println!("Compute psum of: {:?}", output_fibers.iter().map(|c| c.rowptr).collect::<Vec<usize>>());
-                println!("Output fiber size: {:?}", output_fibers.iter().map(|c| c.len()).collect::<Vec<usize>>());
-                self.write_psum(output_fibers);
+                let output_fibers = self.compute_a_window(&rowidxs, scaling_factors, fibers);
+                println!("PE {} rowidxs: {:?} cur_col: {} merge_mode: {} output fiber size: {:?}", &i, &rowidxs, &self.pes[i].cur_col, &self.pes[i].merge_mode, output_fibers.iter().map(|c| c.len()).collect::<Vec<usize>>());
+                self.write_psum(rowidxs, output_fibers);
             }
         }
     }
+
+    pub fn get_result(&mut self) -> Vec<CsrRow> {
+        let mut c = vec![];
+        for rowid in 0..self.a_mem.indptr.len() - 1 {
+            let addrs = self.output_tracker.get(&rowid).unwrap();
+            assert!(addrs.len() == 1, "Partially merged psums! {:?} of row {}", &addrs, rowid);
+            let addr = addrs[0];
+            let mut csrrow = self.fiber_cache.read(addr).unwrap();
+            csrrow.rowptr = rowid;
+            c.push(csrrow);
+        }
+
+        return c;
+    }
+
+    pub fn get_a_mat_stat(&self) -> (usize, usize) {
+        (self.a_mem.read_count, self.a_mem.write_count)
+    }
+
+    pub fn get_b_mat_stat(&self) -> (usize, usize) {
+        (self.fiber_cache.b_mem.read_count, self.fiber_cache.b_mem.write_count)
+    }
+
+    pub fn get_c_mat_stat(&self) -> (usize, usize) {
+        (self.fiber_cache.psum_mem.read_count, self.fiber_cache.psum_mem.write_count)
+    }
+
 }

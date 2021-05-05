@@ -1,11 +1,6 @@
 use fmt::write;
 use itertools::izip;
-use std::{
-    cmp::max,
-    collections::{HashMap, VecDeque},
-    fmt,
-    ops::Index,
-};
+use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, fmt, ops::Index};
 
 use crate::gemm::GEMM;
 
@@ -70,6 +65,13 @@ impl CsrRow {
     }
 }
 
+impl fmt::Display for CsrRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let display_len = min(self.data.len(), 5);
+        write!(f, "rowptr: {} indptr: {:?} data: {:?}", self.rowptr, &self.indptr[0..display_len], &self.data[0..display_len])
+    }
+}
+
 pub fn sorted_element_vec_to_csr_row(srt_ele_vec: Vec<Element>) -> CsrRow {
     let rowptr = srt_ele_vec[0].row_idx;
     let data = srt_ele_vec.iter().map(|e| e.value).collect::<Vec<f64>>();
@@ -128,8 +130,8 @@ impl StorageAPI for CsrMatStorage {
             });
         } else {
             return Err(StorageError::ReadEmptyRowError(format!(
-                "Invalid col_pos: {}..{} with end_row_pos {}",
-                s, t, end_row_pos
+                "Invalid col_pos: {}..{} with end_row_pos {} for row {}.",
+                s, t, end_row_pos, row_ptr
             )));
         }
     }
@@ -299,6 +301,24 @@ impl<'a> LRUCache<'a> {
         }
     }
 
+    pub fn debug_write(&mut self, csrrow: CsrRow) {
+        let num = csrrow.size();
+        if self.cur_num + num <= self.capability {
+            self.cur_num += num;
+            self.lru_queue.push_back(csrrow.rowptr);
+            println!("Insert {} into cache.", csrrow.rowptr);
+            self.rowmap.insert(csrrow.rowptr.clone(), csrrow);
+        } else {
+            if let Err(err) = self.freeup_space(self.cur_num + num - self.capability) {
+                panic!("{}", err);
+            }
+            self.cur_num += num;
+            self.lru_queue.push_back(csrrow.rowptr);
+            println!("Insert {} into cache.", csrrow.rowptr);
+            self.rowmap.insert(csrrow.rowptr, csrrow);
+        }
+    }
+
     pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
         while self.lru_queue.len() > 0 && (self.cur_num + space_required > self.capability) {
             let mut popid: usize;
@@ -337,7 +357,6 @@ impl<'a> LRUCache<'a> {
 
     pub fn consume(&mut self, rowid: usize) -> Option<CsrRow> {
         if self.rowmap.contains_key(&rowid) {
-            // self.lru_queue.remove(self.lru_queue.iter().position(|&x| x == rowid).unwrap());
             let csrrow = self.rowmap.remove(&rowid).unwrap();
             self.cur_num -= csrrow.size();
             return Some(csrrow);
@@ -365,10 +384,37 @@ impl<'a> LRUCache<'a> {
         }
     }
 
+    pub fn debug_read(&mut self, rowid: usize) -> Option<CsrRow> {
+        match self.read_cache(rowid) {
+            Some(csrrow) => {
+                println!("Get {} from cache", rowid);
+                Some(csrrow)
+            },
+            None => {if self.is_psum_row(rowid) {
+                println!("Read {} from psum memory.", rowid);
+                match self.psum_mem.read_row(rowid) {
+                    Ok(csrrow) => {
+                        self.write(csrrow.clone());
+                        Some(csrrow)
+                    },
+                    Err(_) => None,
+                }}else {
+                println!("Read {} from fiber memory.", rowid);
+                match self.b_mem.read_row(rowid) {
+                    Ok(csrrow) => {
+                        self.write(csrrow.clone());
+                        Some(csrrow)
+                    },
+                    Err(_) => None,
+            }}}
+        }
+    }
+
     pub fn swapout(&mut self, rowid: usize) {
         if self.rowmap.contains_key(&rowid) {
-            // self.lru_queue.remove(self.lru_queue.iter().position(|&x| x==rowid).unwrap());
-            self.cur_num -= self.rowmap.remove(&rowid).unwrap().size();
+            let popped_csrrow = self.rowmap.remove(&rowid).unwrap();
+            self.cur_num -= popped_csrrow.size();
+            self.psum_mem.write(&mut vec![popped_csrrow,]).unwrap();
         }
     }
 
