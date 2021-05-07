@@ -53,7 +53,7 @@ fn main() {
 
 
     println!("-----Output product matrix");
-    for idx in 0..min(result.len(), 5) {
+    for idx in 0..min(result.len(), 10) {
         println!("{}", &result[idx]);
     }
 
@@ -62,7 +62,7 @@ fn main() {
     let v_data = validating_product_mat.data().to_vec();
     let v_indices = validating_product_mat.indices().to_vec();
     
-    for idx in 0..min(v_indptr.len()-1, 5) {
+    for idx in 0..min(v_indptr.len()-1, 10) {
         let sliced_len = min(v_indptr[idx+1] - v_indptr[idx], 5);
         let sliced_indptr = &v_indices[v_indptr[idx]..v_indptr[idx]+sliced_len];
         let sliced_data = &v_data[v_indptr[idx]..v_indptr[idx]+sliced_len];
