@@ -122,12 +122,13 @@ impl StorageAPI for CsrMatStorage {
         let s = cur_row_pos + col_s;
         let t = s + ele_num;
         if (s <= t) && (t <= end_row_pos) {
-            self.read_count += 2 * (t - s) + 1;
-            return Ok(CsrRow {
+            let csrrow = CsrRow{
                 rowptr: row_ptr,
                 data: self.data[s..t].to_vec(),
                 indptr: self.indices[s..t].to_vec(),
-            });
+            };
+            self.read_count += csrrow.size();
+            return Ok(csrrow);
         } else {
             return Err(StorageError::ReadEmptyRowError(format!(
                 "Invalid col_pos: {}..{} with end_row_pos {} for row {}.",
@@ -263,6 +264,8 @@ pub struct LRUCache<'a> {
     pub word_byte: usize,
     pub capability: usize,
     pub cur_num: usize,
+    pub read_count: usize,
+    pub write_count: usize,
     pub rowmap: HashMap<usize, CsrRow>,
     pub lru_queue: VecDeque<usize>,
     pub output_base_addr: usize,
@@ -277,6 +280,8 @@ impl<'a> LRUCache<'a> {
             word_byte: word_byte,
             capability: cache_size / word_byte,
             cur_num: 0,
+            read_count: 0,
+            write_count: 0,
             rowmap: HashMap::new(),
             lru_queue: VecDeque::new(),
             output_base_addr: output_base_addr,
@@ -290,6 +295,7 @@ impl<'a> LRUCache<'a> {
         if self.cur_num + num <= self.capability {
             self.cur_num += num;
             self.lru_queue.push_back(csrrow.rowptr);
+            self.write_count += csrrow.size();
             self.rowmap.insert(csrrow.rowptr, csrrow);
         } else {
             if let Err(err) = self.freeup_space(self.cur_num + num - self.capability) {
@@ -297,24 +303,7 @@ impl<'a> LRUCache<'a> {
             }
             self.cur_num += num;
             self.lru_queue.push_back(csrrow.rowptr);
-            self.rowmap.insert(csrrow.rowptr, csrrow);
-        }
-    }
-
-    pub fn debug_write(&mut self, csrrow: CsrRow) {
-        let num = csrrow.size();
-        if self.cur_num + num <= self.capability {
-            self.cur_num += num;
-            self.lru_queue.push_back(csrrow.rowptr);
-            println!("Insert {} into cache.", csrrow.rowptr);
-            self.rowmap.insert(csrrow.rowptr.clone(), csrrow);
-        } else {
-            if let Err(err) = self.freeup_space(self.cur_num + num - self.capability) {
-                panic!("{}", err);
-            }
-            self.cur_num += num;
-            self.lru_queue.push_back(csrrow.rowptr);
-            println!("Insert {} into cache.", csrrow.rowptr);
+            self.write_count += csrrow.size();
             self.rowmap.insert(csrrow.rowptr, csrrow);
         }
     }
@@ -337,9 +326,19 @@ impl<'a> LRUCache<'a> {
             }
         }
         if self.capability - self.cur_num < space_required {
-            return Err(format!("Not enough space for {}", space_required));
+            return Err(format!("freeup_space: Not enough space for {}", space_required));
         } else {
             return Ok(());
+        }
+    }
+
+    pub fn freeup_row(&mut self, rowid: usize) -> Result<CsrRow, String> {
+        if self.rowmap.contains_key(&rowid) {
+            let removed_row = self.rowmap.remove(&rowid).unwrap();
+            self.cur_num -= removed_row.size();
+            return Ok(removed_row);
+        } else {
+            return Err(format!("freeup_row: row {} not found", rowid));
         }
     }
 
@@ -349,6 +348,7 @@ impl<'a> LRUCache<'a> {
                 .remove(self.lru_queue.iter().position(|&x| x == rowid).unwrap());
             self.lru_queue.push_back(rowid);
             let csrrow = self.rowmap.get(&rowid).unwrap().clone();
+            self.read_count += csrrow.size();
             return Some(csrrow);
         } else {
             return None;
@@ -356,52 +356,41 @@ impl<'a> LRUCache<'a> {
     }
 
     pub fn consume(&mut self, rowid: usize) -> Option<CsrRow> {
-        if self.rowmap.contains_key(&rowid) {
-            let csrrow = self.rowmap.remove(&rowid).unwrap();
-            self.cur_num -= csrrow.size();
-            return Some(csrrow);
-        } else {
-            return None;
+        match self.freeup_row(rowid) {
+            Ok(csrrow) => {
+                self.read_count += csrrow.size();
+                Some(csrrow)},
+            Err(_) => {if self.is_psum_row(rowid) { match self.psum_mem.read_row(rowid) {
+                Ok(csrrow) => {
+                    self.read_count += csrrow.size();
+                    Some(csrrow)
+                },
+                Err(_) => None,
+            }} else { match self.b_mem.read_row(rowid) {
+                Ok(csrrow) => {
+                    self.read_count += csrrow.size();
+                    Some(csrrow)
+                },
+                Err(_) => None,
+            }}}
         }
     }
 
     pub fn read(&mut self, rowid: usize) -> Option<CsrRow> {
         match self.read_cache(rowid) {
-            Some(csrrow) => Some(csrrow),
+            Some(csrrow) => {
+                self.read_count += csrrow.size();
+                Some(csrrow)},
             None => {if self.is_psum_row(rowid) { match self.psum_mem.read_row(rowid) {
                     Ok(csrrow) => {
+                        self.read_count += csrrow.size();
                         self.write(csrrow.clone());
                         Some(csrrow)
                     },
                     Err(_) => None,
-                }}else { match self.b_mem.read_row(rowid) {
+                }} else { match self.b_mem.read_row(rowid) {
                     Ok(csrrow) => {
-                        self.write(csrrow.clone());
-                        Some(csrrow)
-                    },
-                    Err(_) => None,
-            }}}
-        }
-    }
-
-    pub fn debug_read(&mut self, rowid: usize) -> Option<CsrRow> {
-        match self.read_cache(rowid) {
-            Some(csrrow) => {
-                println!("Get {} from cache", rowid);
-                Some(csrrow)
-            },
-            None => {if self.is_psum_row(rowid) {
-                println!("Read {} from psum memory.", rowid);
-                match self.psum_mem.read_row(rowid) {
-                    Ok(csrrow) => {
-                        self.write(csrrow.clone());
-                        Some(csrrow)
-                    },
-                    Err(_) => None,
-                }}else {
-                println!("Read {} from fiber memory.", rowid);
-                match self.b_mem.read_row(rowid) {
-                    Ok(csrrow) => {
+                        self.read_count += csrrow.size();
                         self.write(csrrow.clone());
                         Some(csrrow)
                     },
@@ -421,4 +410,5 @@ impl<'a> LRUCache<'a> {
     pub fn is_psum_row(&self, rowid: usize) -> bool {
         return rowid >= self.output_base_addr;
     }
+
 }

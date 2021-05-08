@@ -6,6 +6,7 @@ use sprs::CsMat;
 use storage::{LRUCache, VectorStorage};
 
 use crate::storage::{self, CsrMatStorage, CsrRow, StorageAPI, StorageError};
+use crate::frontend::Accelerator;
 
 #[derive(Debug, Clone)]
 struct PE {
@@ -40,7 +41,7 @@ impl ReuseTracker {
     }
 }
 
-pub struct OmegaTraffic<'a> {
+pub struct TrafficModel<'a> {
     no_new_product: bool,
     reduction_window: [usize; 2],
     reuse_trackers: Vec<ReuseTracker>,
@@ -54,9 +55,10 @@ pub struct OmegaTraffic<'a> {
     output_base_addr: usize,
     output_tracker: HashMap<usize, Vec<usize>>,
     merge_queue: Vec<usize>,
+    accelerator: Accelerator,
 }
 
-impl<'a> OmegaTraffic<'a> {
+impl<'a> TrafficModel<'a> {
     pub fn new(
         pe_num: usize,
         lane_num: usize,
@@ -66,10 +68,11 @@ impl<'a> OmegaTraffic<'a> {
         a_mem: &'a mut CsrMatStorage,
         b_mem: &'a mut CsrMatStorage,
         psum_mem: &'a mut VectorStorage,
-    ) -> OmegaTraffic<'a> {
+        accelerator: Accelerator,
+    ) -> TrafficModel<'a> {
         // Init from the inner-product dataflow.
         // Can be changed to be adaptive.
-        OmegaTraffic {
+        TrafficModel {
             no_new_product: false,
             reduction_window: [lane_num, 1],
             reuse_trackers: vec![ReuseTracker::new(); pe_num],
@@ -91,6 +94,7 @@ impl<'a> OmegaTraffic<'a> {
             output_tracker: HashMap::new(),
             a_mem,
             merge_queue: vec![],
+            accelerator: accelerator,
         }
     }
 
@@ -186,8 +190,6 @@ impl<'a> OmegaTraffic<'a> {
         println!("Assign jobs: merge queue: {:?}", &self.merge_queue);
 
         // No job to assign if no multiplication and merge workloads.
-        // BUG: If there is no_new_product while some PE is still computing, but the previous psums have been all merged.
-        // Then this will cause the execution to end prematurelly.
         if self.no_new_product && self.pes.iter().all(|x| x.cur_rows.len() == 0) && psums_num == 0 {
             return true;
         }
@@ -199,6 +201,7 @@ impl<'a> OmegaTraffic<'a> {
         let mut merge_pe_num = (psums_num + self.lane_num - 1) / self.lane_num;
 
         // Assign jobs to PEs.
+        let mut adjusted = false;
         for pe_no in 0..self.pe_num {
             // Allocate PEs to merge the unmerged psums in prior.
             if merge_pe_num > 0 {
@@ -207,18 +210,12 @@ impl<'a> OmegaTraffic<'a> {
             } else {
                 self.pes[pe_no].merge_mode = false;
                 if self.pes[pe_no].cur_rows.len() == 0 {
-                    // Assign initial rows to PEs.
-                    // match self.get_valid_rowids(self.reduction_window[1]) {
-                    //     Some(rowids) => {
-                    //         self.pes[pe_no].cur_rows = rowids;
-                    //         self.pes[pe_no].cur_col = 0;
-                    //         self.pes[pe_no].reduction_window = self.reduction_window.clone();
-                    //         self.local_pe = pe_no;
-                    //     }
-                    //     None => {
-                    //         self.no_new_product = true;
-                    //     }
-                    // }
+                    if !adjusted {
+                        adjusted = true;
+                        println!("Assign jobs: from {:?}", &self.reduction_window);
+                        // self.adjust_window();
+                        println!("Assign jobs: adjust reduction window to: {:?}", &self.reduction_window);
+                    }
                     let rowids = self.get_valid_rowids(self.reduction_window[1]);
                     if rowids.len() > 0 {
                         self.pes[pe_no].cur_rows = rowids;
@@ -255,7 +252,7 @@ impl<'a> OmegaTraffic<'a> {
                 let mut fbs = vec![];
                 let mut sfs = vec![];
                 for colid in psums.drain(0..used_num) {
-                    let csrrow = self.fiber_cache.read(colid).unwrap();
+                    let csrrow = self.fiber_cache.consume(colid).unwrap();
                     fbs.push(csrrow);
                     sfs.push((colid, 1f64));
                 }
@@ -349,7 +346,9 @@ impl<'a> OmegaTraffic<'a> {
         loop {
             println!("----");
             // Adjust window according to previous execution.
-            self.adjust_window();
+            if self.accelerator == Accelerator::Omega {
+                self.adjust_window();
+            }
 
             // Assign jobs to PEs.
             let done = self.assign_jobs();
@@ -364,13 +363,16 @@ impl<'a> OmegaTraffic<'a> {
                 let (rowidxs, scaling_factors, fibers) = self.fetch_window_data(i);
                 let output_fibers = self.compute_a_window(&rowidxs, scaling_factors, fibers);
                 println!("Compute: PE {} rowidxs: {:?} cur_col: {} merge_mode: {} output fiber size: {:?}", &i, &rowidxs, &self.pes[i].cur_col, &self.pes[i].merge_mode, output_fibers.iter().map(|c| c.len()).collect::<Vec<usize>>());
-
+                println!("Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}", self.reuse_trackers[i].touched_fiber_size, self.reuse_trackers[i].dedup_fiber_size, self.reuse_trackers[i].output_fiber_size);
                 // Update reuse tracker if it is not in the merge mode.
                 if !self.pes[i].merge_mode {
                     self.reuse_trackers[i].output_fiber_size += output_fibers.iter().fold(0, |acc, x| acc + x.size());
                 }
                 self.write_psum(rowidxs, output_fibers);
             }
+            println!("Cache occp: {} in {}, read_count: {}, write_count: {}", self.fiber_cache.cur_num, self.fiber_cache.capability, self.fiber_cache.read_count, self.fiber_cache.write_count);
+            println!("B mem: read_count: {}, write_count: {}", self.fiber_cache.b_mem.read_count, self.fiber_cache.b_mem.write_count);
+            println!("C mem: read_count: {}, write_count: {}", self.fiber_cache.psum_mem.read_count, self.fiber_cache.psum_mem.write_count);
         }
     }
 

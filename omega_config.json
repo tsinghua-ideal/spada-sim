@@ -1,0 +1,4 @@
+{
+    "ss_filepath": "../adaptive_sparse_accelerator/workload/pickled_gemms/SS_gemms_01_27_20_37.pkl",
+    "nn_filepath": "../adaptive_sparse_accelerator/workload/pickled_gemms/NN_gemms_02_01_21_31.pkl"
+}
