@@ -22,7 +22,8 @@ arg_enum! {
 arg_enum! {
     #[derive(Debug, Clone, PartialEq)]
     pub enum Accelerator {
-        Gamma,
+        Ip,
+        Op,
         Omega,
     }
 }

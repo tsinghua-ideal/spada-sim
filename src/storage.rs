@@ -271,10 +271,13 @@ pub struct LRUCache<'a> {
     pub output_base_addr: usize,
     pub b_mem: &'a mut CsrMatStorage,
     pub psum_mem: &'a mut VectorStorage,
+    pub miss_count: usize,
+    pub b_evict_count: usize,
+    pub psum_evict_count: usize,
 }
 
 impl<'a> LRUCache<'a> {
-    pub fn new(cache_size: usize, word_byte: usize, output_base_addr: usize, B_mem: &'a mut CsrMatStorage, psum_mem: &'a mut VectorStorage) -> LRUCache<'a> {
+    pub fn new(cache_size: usize, word_byte: usize, output_base_addr: usize, b_mem: &'a mut CsrMatStorage, psum_mem: &'a mut VectorStorage) -> LRUCache<'a> {
         LRUCache {
             cache_size: cache_size,
             word_byte: word_byte,
@@ -285,8 +288,11 @@ impl<'a> LRUCache<'a> {
             rowmap: HashMap::new(),
             lru_queue: VecDeque::new(),
             output_base_addr: output_base_addr,
-            b_mem: B_mem,
+            b_mem: b_mem,
             psum_mem: psum_mem,
+            miss_count: 0,
+            b_evict_count: 0,
+            psum_evict_count: 0,
         }
     }
 
@@ -298,7 +304,7 @@ impl<'a> LRUCache<'a> {
             self.write_count += csrrow.size();
             self.rowmap.insert(csrrow.rowptr, csrrow);
         } else {
-            if let Err(err) = self.freeup_space(self.cur_num + num - self.capability) {
+            if let Err(err) = self.freeup_space(num) {
                 panic!("{}", err);
             }
             self.cur_num += num;
@@ -320,12 +326,15 @@ impl<'a> LRUCache<'a> {
             if self.is_psum_row(popid) {
                 let popped_csrrow = self.rowmap.remove(&popid).unwrap();
                 self.cur_num -= popped_csrrow.size();
+                self.psum_evict_count += popped_csrrow.size();
                 self.psum_mem.write(&mut vec![popped_csrrow,]).unwrap();
             } else {
-                self.cur_num -= self.rowmap.remove(&popid).unwrap().size();
+                let evict_size = self.rowmap.remove(&popid).unwrap().size();
+                self.cur_num -= evict_size;
+                self.b_evict_count += evict_size;
             }
         }
-        if self.capability - self.cur_num < space_required {
+        if self.cur_num + space_required > self.capability {
             return Err(format!("freeup_space: Not enough space for {}", space_required));
         } else {
             return Ok(());
@@ -363,12 +372,14 @@ impl<'a> LRUCache<'a> {
             Err(_) => {if self.is_psum_row(rowid) { match self.psum_mem.read_row(rowid) {
                 Ok(csrrow) => {
                     self.read_count += csrrow.size();
+                    self.miss_count += csrrow.size();
                     Some(csrrow)
                 },
                 Err(_) => None,
             }} else { match self.b_mem.read_row(rowid) {
                 Ok(csrrow) => {
                     self.read_count += csrrow.size();
+                    self.miss_count += csrrow.size();
                     Some(csrrow)
                 },
                 Err(_) => None,
@@ -384,6 +395,7 @@ impl<'a> LRUCache<'a> {
             None => {if self.is_psum_row(rowid) { match self.psum_mem.read_row(rowid) {
                     Ok(csrrow) => {
                         self.read_count += csrrow.size();
+                        self.miss_count += csrrow.size();
                         self.write(csrrow.clone());
                         Some(csrrow)
                     },
@@ -391,6 +403,7 @@ impl<'a> LRUCache<'a> {
                 }} else { match self.b_mem.read_row(rowid) {
                     Ok(csrrow) => {
                         self.read_count += csrrow.size();
+                        self.miss_count += csrrow.size();
                         self.write(csrrow.clone());
                         Some(csrrow)
                     },

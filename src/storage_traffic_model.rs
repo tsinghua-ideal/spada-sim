@@ -72,9 +72,14 @@ impl<'a> TrafficModel<'a> {
     ) -> TrafficModel<'a> {
         // Init from the inner-product dataflow.
         // Can be changed to be adaptive.
+        let reduction_window = match accelerator {
+            Accelerator::Ip | Accelerator::Omega => [lane_num, 1],
+            Accelerator::Op => [1, lane_num],
+        };
+
         TrafficModel {
             no_new_product: false,
-            reduction_window: [lane_num, 1],
+            reduction_window: reduction_window,
             reuse_trackers: vec![ReuseTracker::new(); pe_num],
             local_pe: pe_num,
             pe_num: pe_num,
@@ -179,6 +184,7 @@ impl<'a> TrafficModel<'a> {
         while i != self.merge_queue.len() {
             let psum_addrs = self.output_tracker.get(&self.merge_queue[i]).unwrap();
             if psum_addrs.len() == 1 {
+                println!("Assign jobs: swapout addr {} of {}", psum_addrs[0], i);
                 self.merge_queue.remove(i);
                 self.fiber_cache.swapout(psum_addrs[0]);
             } else {
@@ -193,9 +199,6 @@ impl<'a> TrafficModel<'a> {
         if self.no_new_product && self.pes.iter().all(|x| x.cur_rows.len() == 0) && psums_num == 0 {
             return true;
         }
-        // if self.pes.iter().fold(0, |acc, x| acc + x.cur_rows.len()) > 0 && psums_num == 0 {
-        //     return true;
-        // }
 
         // Calculate the required merge psums number.
         let mut merge_pe_num = (psums_num + self.lane_num - 1) / self.lane_num;
@@ -212,8 +215,11 @@ impl<'a> TrafficModel<'a> {
                 if self.pes[pe_no].cur_rows.len() == 0 {
                     if !adjusted {
                         adjusted = true;
+                        // Adjust window according to previous execution.
                         println!("Assign jobs: from {:?}", &self.reduction_window);
-                        // self.adjust_window();
+                        if self.accelerator == Accelerator::Omega {
+                            self.adjust_window();
+                        }
                         println!("Assign jobs: adjust reduction window to: {:?}", &self.reduction_window);
                     }
                     let rowids = self.get_valid_rowids(self.reduction_window[1]);
@@ -245,8 +251,9 @@ impl<'a> TrafficModel<'a> {
 
         if pe.merge_mode {
             let mut unused_lane_num = self.lane_num;
-            while unused_lane_num > 0 && self.merge_queue.len() > 0 {
-                let rowidx = self.merge_queue.first().unwrap();
+            let mut i = 0;
+            while unused_lane_num > 0 && i < self.merge_queue.len() {
+                let rowidx = &self.merge_queue[i];
                 let psums = self.output_tracker.get_mut(rowidx).unwrap();
                 let used_num = min(psums.len(), unused_lane_num);
                 let mut fbs = vec![];
@@ -261,7 +268,7 @@ impl<'a> TrafficModel<'a> {
                 rowidxs.push(*rowidx);
 
                 if psums.len() == 0 {
-                    self.merge_queue.remove(0);
+                    i += 1;
                 }
                 unused_lane_num -= used_num;
             }
@@ -345,10 +352,6 @@ impl<'a> TrafficModel<'a> {
     pub fn execute(&mut self) {
         loop {
             println!("----");
-            // Adjust window according to previous execution.
-            if self.accelerator == Accelerator::Omega {
-                self.adjust_window();
-            }
 
             // Assign jobs to PEs.
             let done = self.assign_jobs();
@@ -358,9 +361,18 @@ impl<'a> TrafficModel<'a> {
                 break;
             }
 
+            let prev_b_mem_read_count = self.fiber_cache.b_mem.read_count;
+            let prev_psum_mem_read_count = self.fiber_cache.psum_mem.read_count;
+            let prev_psum_mem_write_count = self.fiber_cache.psum_mem.write_count;
+            let prev_miss_count = self.fiber_cache.miss_count;
+            let prev_b_evict_count = self.fiber_cache.b_evict_count;
+            let prev_psum_evict_count = self.fiber_cache.psum_evict_count;
+
             // Each PE executes a window.
             for i in 0..self.pe_num {
                 let (rowidxs, scaling_factors, fibers) = self.fetch_window_data(i);
+                println!("PE: {}, Fetch data: scaling_factors: {:?}", i,
+                    scaling_factors.iter().map(|x| x.iter().map(|y| y.0).collect::<Vec<usize>>()).collect::<Vec<Vec<usize>>>());
                 let output_fibers = self.compute_a_window(&rowidxs, scaling_factors, fibers);
                 println!("Compute: PE {} rowidxs: {:?} cur_col: {} merge_mode: {} output fiber size: {:?}", &i, &rowidxs, &self.pes[i].cur_col, &self.pes[i].merge_mode, output_fibers.iter().map(|c| c.len()).collect::<Vec<usize>>());
                 println!("Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}", self.reuse_trackers[i].touched_fiber_size, self.reuse_trackers[i].dedup_fiber_size, self.reuse_trackers[i].output_fiber_size);
@@ -370,9 +382,14 @@ impl<'a> TrafficModel<'a> {
                 }
                 self.write_psum(rowidxs, output_fibers);
             }
-            println!("Cache occp: {} in {}, read_count: {}, write_count: {}", self.fiber_cache.cur_num, self.fiber_cache.capability, self.fiber_cache.read_count, self.fiber_cache.write_count);
-            println!("B mem: read_count: {}, write_count: {}", self.fiber_cache.b_mem.read_count, self.fiber_cache.b_mem.write_count);
-            println!("C mem: read_count: {}, write_count: {}", self.fiber_cache.psum_mem.read_count, self.fiber_cache.psum_mem.write_count);
+            println!("Cache occp: {} in {}, miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}", self.fiber_cache.cur_num, self.fiber_cache.capability,
+                self.fiber_cache.miss_count - prev_miss_count, self.fiber_cache.miss_count,
+                self.fiber_cache.b_evict_count - prev_b_evict_count, self.fiber_cache.b_evict_count,
+                self.fiber_cache.psum_evict_count - prev_psum_evict_count, self.fiber_cache.psum_evict_count);
+            println!("B mem: read_count: + {} -> {}", self.fiber_cache.b_mem.read_count - prev_b_mem_read_count, self.fiber_cache.b_mem.read_count);
+            println!("C mem: read_count: + {} -> {}, write_count: +{} -> {}",
+                self.fiber_cache.psum_mem.read_count - prev_psum_mem_read_count, self.fiber_cache.psum_mem.read_count,
+                self.fiber_cache.psum_mem.write_count - prev_psum_mem_write_count, self.fiber_cache.psum_mem.write_count);
         }
     }
 
@@ -385,7 +402,10 @@ impl<'a> TrafficModel<'a> {
                 println!("Get result: row: {} addrs: {:?}", rowid, &addrs);
                 assert!(addrs.len() == 1, "Partially merged psums! {:?} of row {}", &addrs, rowid);
                 let addr = addrs[0];
-                csrrow = self.fiber_cache.read(addr).unwrap();
+                csrrow = match self.fiber_cache.psum_mem.data.get(&addr) {
+                    Some(row) => row.clone(),
+                    None => self.fiber_cache.rowmap.get(&addr).unwrap().clone(),
+                };
                 csrrow.rowptr = rowid;
             }
             c.push(csrrow);

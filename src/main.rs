@@ -32,6 +32,7 @@ fn main() {
             let gemm = load_pickled_gemms(&gemm_fp, &cli.workload).unwrap();
             println!("Get GEMM {}", gemm.name);
             println!("{}", &gemm);
+            println!("Avg row len of A: {}, Avg row len of B: {}", gemm.a.nnz() / gemm.a.rows(), gemm.b.nnz() / gemm.b.rows());
 
             let validating_product_mat = (&gemm.a * &gemm.b).to_csr();
 
