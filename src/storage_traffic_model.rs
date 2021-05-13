@@ -109,6 +109,7 @@ impl<'a> TrafficModel<'a> {
         for _ in 0..row_num {
             loop {
                 if rowid >= (self.a_mem.indptr.len() - 1) {
+                    self.unalloc_row = rowid;
                     return rowids;
                 } else if self.a_mem.indptr[rowid + 1] - self.a_mem.indptr[rowid] == 0 {
                     rowid += 1;
@@ -163,28 +164,16 @@ impl<'a> TrafficModel<'a> {
     }
 
     fn assign_jobs(&mut self) -> bool {
-        // Update work mode.
-        for pe_no in 0..self.pe_num {
-            let pe = &self.pes[pe_no];
-            if (pe.cur_rows.len() != 0) && !self.is_col_start_valid(&pe.cur_rows, pe.cur_col+pe.reduction_window[0]) {
-                // Finish one traverse over current rows.
-                // Add the finished rows into merge queue and turn into merge mode.
-                for row in pe.cur_rows.iter() {
-                    self.merge_queue.push(*row);
-                }
-                // Clear the current jobs.
-                self.pes[pe_no].cur_rows.clear();
-                self.pes[pe_no].cur_col = 0;
-            }
-        }
-
-        // Writeback merged fiber.
+        println!("Merge queue: {:?}", &self.merge_queue);
+        // Dedup merge queue & writeback merged fiber.
         let mut i = 0;
         let mut psums_num: usize = 0;
+        self.merge_queue.sort();
+        self.merge_queue.dedup();
         while i != self.merge_queue.len() {
             let psum_addrs = self.output_tracker.get(&self.merge_queue[i]).unwrap();
             if psum_addrs.len() == 1 {
-                println!("Assign jobs: swapout addr {} of {}", psum_addrs[0], i);
+                println!("Assign jobs: swapout addr {} of {}", psum_addrs[0], self.merge_queue[i]);
                 self.merge_queue.remove(i);
                 self.fiber_cache.swapout(psum_addrs[0]);
             } else {
@@ -251,9 +240,8 @@ impl<'a> TrafficModel<'a> {
 
         if pe.merge_mode {
             let mut unused_lane_num = self.lane_num;
-            let mut i = 0;
-            while unused_lane_num > 0 && i < self.merge_queue.len() {
-                let rowidx = &self.merge_queue[i];
+            while unused_lane_num > 0 && self.merge_queue.len() > 0 {
+                let rowidx = self.merge_queue.first().unwrap();
                 let psums = self.output_tracker.get_mut(rowidx).unwrap();
                 let used_num = min(psums.len(), unused_lane_num);
                 let mut fbs = vec![];
@@ -268,9 +256,10 @@ impl<'a> TrafficModel<'a> {
                 rowidxs.push(*rowidx);
 
                 if psums.len() == 0 {
-                    i += 1;
+                    self.merge_queue.remove(0);
                 }
                 unused_lane_num -= used_num;
+                // pe.cur_rows = rowidxs.clone();
             }
         } else {
             rowidxs = pe.cur_rows.clone();
@@ -303,8 +292,10 @@ impl<'a> TrafficModel<'a> {
                 fibers.push(fbs);
             }
             // Update reuse tracker data.
+            // println!("Fetch row data: previous touched: {}, dedup: {}", self.reuse_trackers[pe_no].touched_fiber_size, self.reuse_trackers[pe_no].dedup_fiber_size);
             self.reuse_trackers[pe_no].touched_fiber_size += fibers.iter().flatten().fold(0, |acc, x| acc + x.size());
-            self.reuse_trackers[pe_no].dedup_fiber_size += fibers.iter().flatten().dedup_by(|x, y| x.rowptr == y.rowptr).fold(0, |acc, x| acc + x.size());
+            self.reuse_trackers[pe_no].dedup_fiber_size += fibers.iter().flatten().sorted_by(|a, b| Ord::cmp(&a.rowptr, &b.rowptr)).dedup_by(|x, y| x.rowptr == y.rowptr).fold(0, |acc, x| acc + x.size());
+            // println!("Fetch row data: current touched: {}, dedup: {}", self.reuse_trackers[pe_no].touched_fiber_size, self.reuse_trackers[pe_no].dedup_fiber_size)
         }
 
         return (rowidxs, scaling_factors, fibers);
@@ -374,12 +365,34 @@ impl<'a> TrafficModel<'a> {
                 println!("PE: {}, Fetch data: scaling_factors: {:?}", i,
                     scaling_factors.iter().map(|x| x.iter().map(|y| y.0).collect::<Vec<usize>>()).collect::<Vec<Vec<usize>>>());
                 let output_fibers = self.compute_a_window(&rowidxs, scaling_factors, fibers);
-                println!("Compute: PE {} rowidxs: {:?} cur_col: {} merge_mode: {} output fiber size: {:?}", &i, &rowidxs, &self.pes[i].cur_col, &self.pes[i].merge_mode, output_fibers.iter().map(|c| c.len()).collect::<Vec<usize>>());
+                println!("Compute: rowidxs: {:?} cur_col: {} merge_mode: {} output fiber size: {:?}", &rowidxs, &self.pes[i].cur_col, &self.pes[i].merge_mode, output_fibers.iter().map(|c| c.len()).collect::<Vec<usize>>());
                 println!("Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}", self.reuse_trackers[i].touched_fiber_size, self.reuse_trackers[i].dedup_fiber_size, self.reuse_trackers[i].output_fiber_size);
                 // Update reuse tracker if it is not in the merge mode.
                 if !self.pes[i].merge_mode {
                     self.reuse_trackers[i].output_fiber_size += output_fibers.iter().fold(0, |acc, x| acc + x.size());
                 }
+
+                // Update work mode.
+                let pe = &self.pes[i];
+                if pe.merge_mode {
+                    for row in rowidxs.iter() {
+                        self.merge_queue.push(*row);
+                    }
+                } else if !pe.merge_mode && pe.cur_rows.len() != 0 && !self.is_col_start_valid(&pe.cur_rows, pe.cur_col+pe.reduction_window[0]) {
+                    // Finish one traverse over current rows.
+                    // Add the finished rows into merge queue and turn into merge mode.
+                    for row in pe.cur_rows.iter() {
+                        self.merge_queue.push(*row);
+                    }
+                    // Clear the current jobs.
+                    self.pes[i].cur_rows.clear();
+                    self.pes[i].cur_col = 0;
+                    self.reuse_trackers[i].touched_fiber_size = 0;
+                    self.reuse_trackers[i].dedup_fiber_size = 0;
+                    self.reuse_trackers[i].output_fiber_size = 0;
+                }
+
+                // Writeback psums.
                 self.write_psum(rowidxs, output_fibers);
             }
             println!("Cache occp: {} in {}, miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}", self.fiber_cache.cur_num, self.fiber_cache.capability,

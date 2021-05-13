@@ -274,6 +274,8 @@ pub struct LRUCache<'a> {
     pub miss_count: usize,
     pub b_evict_count: usize,
     pub psum_evict_count: usize,
+    pub b_occp: usize,
+    pub psum_occp: usize,
 }
 
 impl<'a> LRUCache<'a> {
@@ -293,10 +295,18 @@ impl<'a> LRUCache<'a> {
             miss_count: 0,
             b_evict_count: 0,
             psum_evict_count: 0,
+            b_occp: 0,
+            psum_occp: 0,
         }
     }
 
     pub fn write(&mut self, csrrow: CsrRow) {
+        if self.is_psum_row(csrrow.rowptr) {
+            self.psum_occp += csrrow.size();
+        } else {
+            self.b_occp += csrrow.size();
+        }
+
         let num = csrrow.size();
         if self.cur_num + num <= self.capability {
             self.cur_num += num;
@@ -327,10 +337,12 @@ impl<'a> LRUCache<'a> {
                 let popped_csrrow = self.rowmap.remove(&popid).unwrap();
                 self.cur_num -= popped_csrrow.size();
                 self.psum_evict_count += popped_csrrow.size();
+                self.psum_occp -= popped_csrrow.size();
                 self.psum_mem.write(&mut vec![popped_csrrow,]).unwrap();
             } else {
                 let evict_size = self.rowmap.remove(&popid).unwrap().size();
                 self.cur_num -= evict_size;
+                self.b_occp -= evict_size;
                 self.b_evict_count += evict_size;
             }
         }
@@ -345,6 +357,11 @@ impl<'a> LRUCache<'a> {
         if self.rowmap.contains_key(&rowid) {
             let removed_row = self.rowmap.remove(&rowid).unwrap();
             self.cur_num -= removed_row.size();
+            if self.is_psum_row(rowid) {
+                self.psum_occp -= removed_row.size();
+            } else {
+                self.b_occp -= removed_row.size();
+            }
             return Ok(removed_row);
         } else {
             return Err(format!("freeup_row: row {} not found", rowid));
@@ -416,6 +433,11 @@ impl<'a> LRUCache<'a> {
         if self.rowmap.contains_key(&rowid) {
             let popped_csrrow = self.rowmap.remove(&rowid).unwrap();
             self.cur_num -= popped_csrrow.size();
+            if self.is_psum_row(rowid) {
+                self.psum_occp -= popped_csrrow.size();
+            } else {
+                self.b_occp -= popped_csrrow.size();
+            }
             self.psum_mem.write(&mut vec![popped_csrrow,]).unwrap();
         }
     }
