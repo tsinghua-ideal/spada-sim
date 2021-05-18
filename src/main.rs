@@ -5,6 +5,8 @@ mod py2rust;
 mod storage;
 mod storage_traffic_model;
 mod frontend;
+mod preprocessing;
+mod new_storage_traffic_model;
 
 use std::cmp::min;
 
@@ -18,6 +20,7 @@ use crate::py2rust::load_pickled_gemms;
 use crate::storage::CsrMatStorage;
 use structopt::StructOpt;
 use crate::frontend::{parse_config, Cli, Simulator, Accelerator, WorkloadCate};
+use crate::preprocessing::affinity_based_row_reordering;
 
 fn main() {
     let omega_config = parse_config("omega_config.json").unwrap();
@@ -30,21 +33,30 @@ fn main() {
                 WorkloadCate::SS => omega_config.ss_filepath,
             };
             let gemm = load_pickled_gemms(&gemm_fp, &cli.workload).unwrap();
+            let a_avg_row_len = gemm.a.nnz() / gemm.a.rows();
+            let b_avg_row_len = gemm.b.nnz() / gemm.b.rows();
             println!("Get GEMM {}", gemm.name);
             println!("{}", &gemm);
-            println!("Avg row len of A: {}, Avg row len of B: {}", gemm.a.nnz() / gemm.a.rows(), gemm.b.nnz() / gemm.b.rows());
+            println!("Avg row len of A: {}, Avg row len of B: {}", a_avg_row_len, b_avg_row_len);
 
             let validating_product_mat = (&gemm.a * &gemm.b).to_csr();
 
             let (mut dram_a, mut dram_b) = CsrMatStorage::init_with_gemm(gemm);
             let mut dram_psum = VectorStorage::new();
 
+            // Preprocessing.
+            if cli.preprocess {
+                if let Some(rowmap) = affinity_based_row_reordering(&mut dram_a, omega_config.cache_size, a_avg_row_len, b_avg_row_len) {
+                    dram_a.reorder_row(rowmap);
+                }
+            }
+
             let output_base_addr = dram_b.indptr.len();
             let mut traffic_model = TrafficModel::new(
-                4,
-                8,
-                3 * 1024 * 1024,
-                8,
+                omega_config.pe_num,
+                omega_config.lane_num,
+                omega_config.cache_size,
+                omega_config.word_byte,
                 output_base_addr,
                 &mut dram_a,
                 &mut dram_b,

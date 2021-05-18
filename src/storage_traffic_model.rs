@@ -16,6 +16,11 @@ struct PE {
     merge_mode: bool,
 }
 
+struct Block {
+    pub width: usize, // spatial range
+    pub height: usize, // compressed range
+}
+
 #[derive(Debug, Clone)]
 struct ReuseTracker {
     pub touched_fiber_size: usize,
@@ -108,10 +113,12 @@ impl<'a> TrafficModel<'a> {
         let mut rowid = self.unalloc_row;
         for _ in 0..row_num {
             loop {
-                if rowid >= (self.a_mem.indptr.len() - 1) {
+                // if rowid >= (self.a_mem.indptr.len() - 1) {
+                if rowid >= self.a_mem.get_row_len() {
                     self.unalloc_row = rowid;
                     return rowids;
-                } else if self.a_mem.indptr[rowid + 1] - self.a_mem.indptr[rowid] == 0 {
+                // } else if self.a_mem.indptr[rowid + 1] - self.a_mem.indptr[rowid] == 0 {
+                } else if self.a_mem.get_rowptr(rowid+1) - self.a_mem.get_rowptr(rowid) == 0 {
                     rowid += 1;
                 } else {
                     rowids.push(rowid);
@@ -128,8 +135,10 @@ impl<'a> TrafficModel<'a> {
 
     fn is_col_start_valid(&self, rowids: &Vec<usize>, cur_col_s: usize) -> bool {
         for rowid in rowids.iter() {
-            if (*rowid >= self.a_mem.indptr.len() - 1)
-                || (self.a_mem.indptr[*rowid + 1] - self.a_mem.indptr[*rowid] <= cur_col_s)
+            // if (*rowid >= self.a_mem.indptr.len() - 1)
+            // || (self.a_mem.indptr[*rowid + 1] - self.a_mem.indptr[*rowid] <= cur_col_s)
+            if (*rowid >= self.a_mem.get_row_len())
+            || (self.a_mem.get_rowptr(*rowid+1) - self.a_mem.get_rowptr(*rowid) <= cur_col_s)
             {
                 continue;
             } else {
@@ -141,7 +150,8 @@ impl<'a> TrafficModel<'a> {
     }
 
     fn get_read_element_num(&self, rowid: usize, cur_col_s: usize, window_width: usize) -> usize {
-        min(window_width, self.a_mem.indptr[rowid+1] - self.a_mem.indptr[rowid] - cur_col_s)
+        // min(window_width, self.a_mem.indptr[rowid+1] - self.a_mem.indptr[rowid] - cur_col_s)
+        min(window_width, self.a_mem.get_rowptr(rowid+1) - self.a_mem.get_rowptr(rowid) - cur_col_s)
     }
 
     fn adjust_window(&mut self) {
@@ -266,8 +276,10 @@ impl<'a> TrafficModel<'a> {
             let mut broadcast_cache: HashMap<usize, CsrRow> = HashMap::new();
             for rowidx in rowidxs.iter() {
                 let mut r_sfs = CsrRow::new(*rowidx);
-                if self.a_mem.indptr[*rowidx+1] > self.a_mem.indptr[*rowidx] + pe.cur_col {
-                    let ele_num = min(pe.reduction_window[0], self.a_mem.indptr[*rowidx+1] - self.a_mem.indptr[*rowidx] - pe.cur_col);
+                // if self.a_mem.indptr[*rowidx+1] > self.a_mem.indptr[*rowidx] + pe.cur_col {
+                    // let ele_num = min(pe.reduction_window[0], self.a_mem.indptr[*rowidx+1] - self.a_mem.indptr[*rowidx] - pe.cur_col);
+                if self.a_mem.get_rowptr(*rowidx+1) > self.a_mem.get_rowptr(*rowidx) + pe.cur_col {
+                    let ele_num = min(pe.reduction_window[0], self.a_mem.get_rowptr(*rowidx+1) - self.a_mem.get_rowptr(*rowidx) - pe.cur_col);
                     r_sfs = self.a_mem.read(*rowidx, pe.cur_col, ele_num).unwrap();
                 }
                 let mut fbs = vec![];
@@ -334,6 +346,7 @@ impl<'a> TrafficModel<'a> {
                 .entry(rowidx)
                 .or_default()
                 .push(self.output_base_addr);
+            println!("write_psum: {:?}", self.output_tracker[&rowidx]);
             output_fiber.rowptr = self.output_base_addr;
             self.output_base_addr += 1;
             self.fiber_cache.write(output_fiber);
@@ -352,6 +365,7 @@ impl<'a> TrafficModel<'a> {
                 break;
             }
 
+            let prev_a_mem_read_count = self.a_mem.read_count;
             let prev_b_mem_read_count = self.fiber_cache.b_mem.read_count;
             let prev_psum_mem_read_count = self.fiber_cache.psum_mem.read_count;
             let prev_psum_mem_write_count = self.fiber_cache.psum_mem.write_count;
@@ -399,6 +413,7 @@ impl<'a> TrafficModel<'a> {
                 self.fiber_cache.miss_count - prev_miss_count, self.fiber_cache.miss_count,
                 self.fiber_cache.b_evict_count - prev_b_evict_count, self.fiber_cache.b_evict_count,
                 self.fiber_cache.psum_evict_count - prev_psum_evict_count, self.fiber_cache.psum_evict_count);
+            println!("A mem: read_count: + {} -> {}", self.a_mem.read_count - prev_a_mem_read_count, self.a_mem.read_count);
             println!("B mem: read_count: + {} -> {}", self.fiber_cache.b_mem.read_count - prev_b_mem_read_count, self.fiber_cache.b_mem.read_count);
             println!("C mem: read_count: + {} -> {}, write_count: +{} -> {}",
                 self.fiber_cache.psum_mem.read_count - prev_psum_mem_read_count, self.fiber_cache.psum_mem.read_count,
@@ -408,22 +423,28 @@ impl<'a> TrafficModel<'a> {
 
     pub fn get_result(&mut self) -> Vec<CsrRow> {
         let mut c = vec![];
-        for rowid in 0..self.a_mem.indptr.len() - 1 {
+        // for rowid in 0..self.a_mem.indptr.len() - 1 {
+        for rowid in 0..self.a_mem.get_row_len() {
             let mut csrrow = CsrRow::new(rowid);
-            if self.a_mem.indptr[rowid+1] - self.a_mem.indptr[rowid] > 0 {
+            // if self.a_mem.indptr[rowid+1] - self.a_mem.indptr[rowid] > 0 {
+            if self.a_mem.get_rowptr(rowid+1) - self.a_mem.get_rowptr(rowid) > 0 {
+                let raw_rowid = if self.a_mem.remapped {
+                    self.a_mem.row_remap[&rowid]
+                } else {rowid};
+                // let raw_rowid = self.a_mem.row_remap[&rowid];
                 let addrs = self.output_tracker.get(&rowid).unwrap();
-                println!("Get result: row: {} addrs: {:?}", rowid, &addrs);
-                assert!(addrs.len() == 1, "Partially merged psums! {:?} of row {}", &addrs, rowid);
+                println!("Get result: row: {} addrs: {:?}", raw_rowid, &addrs);
+                assert!(addrs.len() == 1, "Partially merged psums! {:?} of row {}", &addrs, raw_rowid);
                 let addr = addrs[0];
                 csrrow = match self.fiber_cache.psum_mem.data.get(&addr) {
                     Some(row) => row.clone(),
                     None => self.fiber_cache.rowmap.get(&addr).unwrap().clone(),
                 };
-                csrrow.rowptr = rowid;
+                csrrow.rowptr = raw_rowid;
             }
             c.push(csrrow);
         }
-
+        c.sort_by(|a, b| a.rowptr.cmp(&b.rowptr));
         return c;
     }
 

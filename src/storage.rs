@@ -1,6 +1,6 @@
 use fmt::write;
 use itertools::izip;
-use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, fmt, ops::Index};
+use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, fmt, hash::Hash, ops::Index};
 
 use crate::gemm::GEMM;
 
@@ -102,28 +102,36 @@ pub struct CsrMatStorage {
     pub indices: Vec<usize>,
     pub read_count: usize,
     pub write_count: usize,
+    pub remapped: bool,
+    pub row_remap: HashMap<usize, usize>,
 }
 
 impl StorageAPI for CsrMatStorage {
     fn read(
         &mut self,
-        row_ptr: usize,
+        rawp: usize,
         col_s: usize,
         ele_num: usize,
     ) -> Result<CsrRow, StorageError> {
-        if row_ptr >= self.indptr.len() {
+
+        if rawp >= self.indptr.len() {
             return Err(StorageError::ReadOverBoundError(format!(
                 "Invalid row_ptr: {}",
-                row_ptr
+                rawp
             )));
         }
+
+        let row_ptr = if self.remapped {
+            self.row_remap[&rawp]
+        } else { rawp };
+
         let cur_row_pos = self.indptr[row_ptr];
         let end_row_pos = self.indptr[row_ptr + 1];
         let s = cur_row_pos + col_s;
         let t = s + ele_num;
         if (s <= t) && (t <= end_row_pos) {
             let csrrow = CsrRow{
-                rowptr: row_ptr,
+                rowptr: rawp,
                 data: self.data[s..t].to_vec(),
                 indptr: self.indices[s..t].to_vec(),
             };
@@ -132,7 +140,7 @@ impl StorageAPI for CsrMatStorage {
         } else {
             return Err(StorageError::ReadEmptyRowError(format!(
                 "Invalid col_pos: {}..{} with end_row_pos {} for row {}.",
-                s, t, end_row_pos, row_ptr
+                s, t, end_row_pos, rawp
             )));
         }
     }
@@ -161,6 +169,8 @@ impl CsrMatStorage {
                 indices: gemm.a.indices().to_vec(),
                 read_count: 0,
                 write_count: 0,
+                remapped: false,
+                row_remap: HashMap::new(),
             },
             CsrMatStorage {
                 data: gemm.b.data().to_vec(),
@@ -168,6 +178,8 @@ impl CsrMatStorage {
                 indices: gemm.b.indices().to_vec(),
                 read_count: 0,
                 write_count: 0,
+                remapped: false,
+                row_remap: HashMap::new(),
             },
         )
     }
@@ -182,6 +194,21 @@ impl CsrMatStorage {
         let row_len = self.indptr[row_ptr + 1] - self.indptr[row_ptr];
         return self.read(row_ptr, 0, row_len);
     }
+
+    pub fn reorder_row(&mut self, rowmap: HashMap<usize, usize>) {
+        self.remapped = true;
+        self.row_remap = rowmap;
+    }
+
+    pub fn get_rowptr(&self, rowid: usize) -> usize {
+        if self.remapped {
+            return self.indptr[self.row_remap[&rowid]];
+        } else {
+            return self.indptr[rowid];
+        }
+    }
+
+    pub fn get_row_len(&self) -> usize { self.indptr.len() - 1}
 }
 
 

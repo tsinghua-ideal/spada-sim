@@ -9,6 +9,10 @@ use structopt::{StructOpt, clap::arg_enum};
 pub struct OmegaConfig {
     pub ss_filepath: String,
     pub nn_filepath: String,
+    pub pe_num: usize,
+    pub lane_num: usize,
+    pub cache_size: usize,
+    pub word_byte: usize,
 }
 
 arg_enum! {
@@ -52,6 +56,10 @@ pub struct Cli {
 
     /// The workload name.
     pub workload: String,
+
+    /// Preprocessing.
+    #[structopt(short, long)]
+    pub preprocess: bool,
 }
 
 pub fn parse_config(config_fp: &str) -> Result<OmegaConfig, Box<dyn Error>> {
