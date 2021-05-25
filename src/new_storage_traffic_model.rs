@@ -5,7 +5,7 @@ use pyo3::{exceptions::BlockingIOError, ffi::{PyCompile_OpcodeStackEffect, PyExc
 use sprs::CsMat;
 use storage::{LRUCache, VectorStorage};
 
-use crate::storage::{self, CsrMatStorage, CsrRow, StorageAPI, StorageError};
+use crate::{print_type_of, storage::{self, CsrMatStorage, CsrRow, StorageAPI, StorageError}};
 use crate::frontend::Accelerator;
 
 #[derive(Debug, Clone)]
@@ -16,15 +16,22 @@ struct PE {
     row_s: usize,
     col_s: usize,
     window_at_tail: bool,
-    init: bool,
 }
 
 impl PE {
     pub fn assign_block(&mut self, block: Block) {
         self.row_s = block.row_s;
         self.col_s = block.col_s;
-        self.init = false;
         self.cur_block = block;
+        self.window_at_tail = false;
+    }
+
+    pub fn reset_pe(&mut self) {
+        self.row_s = 0;
+        self.col_s = 0;
+        self.cur_block = Block::new(0, 0, 0, 0, false);
+        self.reduction_window= [0, 0];
+        self.window_at_tail = false;
     }
 
 }
@@ -209,7 +216,6 @@ impl<'a> TrafficModel<'a> {
                     row_s: 0,
                     col_s: 0,
                     window_at_tail: false,
-                    init: false,
                 };
                 pe_num
             ],
@@ -251,7 +257,7 @@ impl<'a> TrafficModel<'a> {
                 // Compute the window.
                 let output_fibers = self.compute_a_window(&rowidxs, scaling_factors, fibers);
                 println!("Compute: rows: {:?} cols: {}-{} merge_mode: {} output fiber size: {:?}",
-                    &rowidxs, self.pes[i].col_s, self.pes[i].col_s+self.pes[i].cur_block.width,
+                    &rowidxs, self.pes[i].col_s, self.pes[i].col_s+self.pes[i].reduction_window[0],
                     &self.pes[i].merge_mode, output_fibers.iter().map(|c| c.len()).collect::<Vec<usize>>());
                 println!("Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}",
                     self.exec_trackers[&self.pes[i].cur_block.get_idx()].touched_fiber_size,
@@ -328,13 +334,17 @@ impl<'a> TrafficModel<'a> {
         // Assign jobs to PEs.
         for pe_no in 0..self.pe_num {
             // Allocate PEs to merge the unmerged psums in prior.
+            println!("PE no: {}", pe_no);
             if merge_pe_num > 0 {
                 self.pes[pe_no].merge_mode = true;
                 merge_pe_num -= 1;
             } else {
+                println!("No merge to do.");
+                println!("Reduction window: {:?}", self.reduction_window);
                 self.pes[pe_no].merge_mode = false;
                 // Try to shift the window in the block. Otherwise assign new block to PE.
                 if !self.slide_window(pe_no) {
+                    println!("Failed to shift window.");
                     // Either empty or finished.
                     match self.get_next_block() {
                         Some(block) => {
@@ -344,7 +354,10 @@ impl<'a> TrafficModel<'a> {
                             self.pes[pe_no].assign_block(block);
                             self.pes[pe_no].reduction_window = reduction_window;
                         },
-                        None => self.a_traversed = true,
+                        None => {
+                            self.pes[pe_no].reset_pe();
+                            self.a_traversed = true;
+                        }
                     }
                 }
             }
@@ -402,27 +415,20 @@ impl<'a> TrafficModel<'a> {
     }
 
     fn slide_window(&mut self, pe_no: usize) -> bool {
-        // If the block has just been assigned.
-        if !self.pes[pe_no].init {
-            self.pes[pe_no].row_s = self.pes[pe_no].cur_block.row_s;
+        // If no block has been assigned.
+        if self.pes[pe_no].cur_block.height == 0 { return false; }
+
+        // If the row_s exceeds the block limitation.
+        if self.row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
+        // Try to allocate along K dim.
+        if self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
+                self.pes[pe_no].reduction_window[1]) {
+            self.col_s += self.pes[pe_no].reduction_window[0];
+        } else {
             self.pes[pe_no].col_s = self.pes[pe_no].cur_block.col_s;
             while !self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].col_s, self.pes[pe_no].reduction_window[1]) {
                 self.pes[pe_no].row_s += self.pes[pe_no].reduction_window[1];
                 if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
-            }
-            self.pes[pe_no].init = true;
-        } else {
-            if self.row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
-            // Try to allocate along K dim.
-            if self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
-                    self.pes[pe_no].reduction_window[1]) {
-                self.col_s += self.pes[pe_no].reduction_window[0];
-            } else {
-                self.pes[pe_no].col_s = self.pes[pe_no].cur_block.col_s;
-                while !self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].col_s, self.pes[pe_no].reduction_window[1]) {
-                    self.pes[pe_no].row_s += self.pes[pe_no].reduction_window[1];
-                    if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
-                }
             }
         }
 
@@ -432,6 +438,7 @@ impl<'a> TrafficModel<'a> {
             self.pes[pe_no].window_at_tail = true;
         }
 
+        println!("{} shift to row_s {} col_s {}", pe_no, self.pes[pe_no].row_s, self.pes[pe_no].col_s);
         true
     }
 
@@ -443,6 +450,11 @@ impl<'a> TrafficModel<'a> {
     /// Adjust the reduction window for the current block.
     fn adjust_window(&mut self, cur_block: [usize; 2]) -> [usize; 2] {
         let neighbor_blocks = self.get_neighbor_blocks(&cur_block);
+
+        // If no neighbor blocks, then use the default reduction window shape.
+        if neighbor_blocks.len() == 0 {
+            return [self.lane_num, 1];
+        }
 
         // We look at the neighbor blocks and find the block with the largest total reuse.
         let max_reuse_block = neighbor_blocks[neighbor_blocks
