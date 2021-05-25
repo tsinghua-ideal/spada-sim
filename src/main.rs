@@ -7,6 +7,7 @@ mod storage_traffic_model;
 mod frontend;
 mod preprocessing;
 mod new_storage_traffic_model;
+mod util;
 
 use std::cmp::min;
 
@@ -52,7 +53,18 @@ fn main() {
             }
 
             let output_base_addr = dram_b.indptr.len();
-            let mut traffic_model = TrafficModel::new(
+            // let mut traffic_model = TrafficModel::new(
+            //     omega_config.pe_num,
+            //     omega_config.lane_num,
+            //     omega_config.cache_size,
+            //     omega_config.word_byte,
+            //     output_base_addr,
+            //     &mut dram_a,
+            //     &mut dram_b,
+            //     &mut dram_psum,
+            //     cli.accelerator.clone(),
+            // );
+            let mut traffic_model = new_storage_traffic_model::TrafficModel::new(
                 omega_config.pe_num,
                 omega_config.lane_num,
                 omega_config.cache_size,
