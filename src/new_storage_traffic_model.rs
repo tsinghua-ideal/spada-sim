@@ -201,6 +201,10 @@ impl<'a> TrafficModel<'a> {
             Accelerator::Ip | Accelerator::Omega => [usize::MAX, 1],
             Accelerator::Op => [1, usize::MAX],
         };
+        // let block_shape = match accelerator {
+        //     Accelerator::Ip | Accelerator::Omega => [a_mem.indices.len() / (a_mem.indptr.len() - 1) / 2, 1],
+        //     Accelerator::Op => [1, usize::MAX],
+        // };
 
         TrafficModel {
             a_traversed: false,
@@ -419,13 +423,15 @@ impl<'a> TrafficModel<'a> {
         if self.pes[pe_no].cur_block.height == 0 { return false; }
 
         // If the row_s exceeds the block limitation.
-        if self.row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
+        if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
         // Try to allocate along K dim.
         if self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
                 self.pes[pe_no].reduction_window[1]) {
-            self.col_s += self.pes[pe_no].reduction_window[0];
+            self.pes[pe_no].col_s += self.pes[pe_no].reduction_window[0];
         } else {
             self.pes[pe_no].col_s = self.pes[pe_no].cur_block.col_s;
+            self.pes[pe_no].row_s += self.pes[pe_no].reduction_window[1];
+            if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
             while !self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].col_s, self.pes[pe_no].reduction_window[1]) {
                 self.pes[pe_no].row_s += self.pes[pe_no].reduction_window[1];
                 if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
@@ -438,7 +444,9 @@ impl<'a> TrafficModel<'a> {
             self.pes[pe_no].window_at_tail = true;
         }
 
-        println!("{} shift to row_s {} col_s {}", pe_no, self.pes[pe_no].row_s, self.pes[pe_no].col_s);
+        println!("{} shift to row_s {} col_s {}, block: row_s {} col_s {} height {} width {}",
+            pe_no, self.pes[pe_no].row_s, self.pes[pe_no].col_s, self.pes[pe_no].cur_block.row_s,
+            self.pes[pe_no].cur_block.col_s, self.pes[pe_no].cur_block.height, self.pes[pe_no].cur_block.width);
         true
     }
 
@@ -527,7 +535,7 @@ impl<'a> TrafficModel<'a> {
             }
         } else {
             rowidxs = (pe.row_s..pe.row_s+pe.reduction_window[1])
-                .filter(|x|self.a_mem.get_rowptr(*x+1) as f32 - self.a_mem.get_rowptr(*x) as f32 >= 0.0)
+                .filter(|x|self.a_mem.get_rowptr(*x+1) as i32 - self.a_mem.get_rowptr(*x) as i32 >= 0)
                 .collect();
             let mut broadcast_cache: HashMap<usize, CsrRow> = HashMap::new();
             for rowidx in rowidxs.iter() {
@@ -570,7 +578,6 @@ impl<'a> TrafficModel<'a> {
         return (rowidxs, scaling_factors, fibers);
     }
 
-
     fn compute_a_window(
         &self,
         rowidxs: &Vec<usize>,
@@ -589,6 +596,15 @@ impl<'a> TrafficModel<'a> {
                                 psum.data.insert(pos, sf.1 * value);
                                 psum.indptr.insert(pos, colid);
                             }
+                            // Ok(pos) => {
+                            //     psum.data[pos] += sf.1 * value;
+                            //     println!("{} * {} -> {} at pos {}", sf.1, value, psum.data[pos], pos);
+                            // },
+                            // Err(pos) => {
+                            //     psum.data.insert(pos, sf.1 * value);
+                            //     psum.indptr.insert(pos, colid);
+                            //     println!("{} * {} -> {} at pos {}", sf.1, value, psum.data[pos], pos);
+                            // }
                         }
                     }
                 }
@@ -597,7 +613,6 @@ impl<'a> TrafficModel<'a> {
 
             return psums;
         }
-
 
     fn write_psum(&mut self, rowidxs: Vec<usize>, output_fibers: Vec<CsrRow>) {
         for (rowidx, mut output_fiber) in rowidxs.into_iter().zip(output_fibers.into_iter()) {
