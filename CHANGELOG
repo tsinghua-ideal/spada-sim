@@ -1,0 +1,7 @@
+--2021.05.26--
+1. is_col_valid changed.
+2. TODO: Fix the reduction window adjust ignorance of block shape.
+
+--2021.05.27--
+1. Fix 05.27.2.
+2 TODO: Inspect the C read count.

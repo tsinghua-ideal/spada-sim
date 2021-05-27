@@ -1,8 +1,6 @@
 use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, hash::Hash, ops::Range};
 
 use itertools::{Itertools, Merge, izip, merge, merge_join_by};
-use pyo3::{exceptions::BlockingIOError, ffi::{PyCompile_OpcodeStackEffect, PyExc_NotImplementedError}};
-use sprs::CsMat;
 use storage::{LRUCache, VectorStorage};
 
 use crate::{print_type_of, storage::{self, CsrMatStorage, CsrRow, StorageAPI, StorageError}};
@@ -57,23 +55,11 @@ impl Block {
     }
 
     pub fn get_idx(&self) -> [usize; 2] {
-        [self.row_s, self.col_s]
+        [self.col_s, self.row_s]
     }
 
-    pub fn get_row_range(&self) -> Range<usize> {
-        self.row_s..self.row_s+self.height
-    }
-
-    pub fn get_col_range(&self) -> Range<usize> {
-        self.col_s..self.col_s+self.width
-    }
-
-    pub fn clear(&mut self) {
-        self.width = 0;
-        self.height = 0;
-        self.row_s = 0;
-        self.col_s = 0;
-        self.is_tail = false
+    pub fn get_shape(&self) -> [usize; 2] {
+        [self.width, self.height]
     }
 }
 
@@ -86,7 +72,7 @@ impl BlockTracker {
     pub fn new() -> BlockTracker {
         BlockTracker {
             row_s_list: vec![],
-            col_s_list: vec![vec![]],
+            col_s_list: vec![],
         }
     }
 
@@ -99,7 +85,7 @@ impl BlockTracker {
         if col_pos < 0 {
             return None;
         } else {
-            return Some([cur_block[1], self.col_s_list[row_pos][col_pos as usize]]);
+            return Some([self.col_s_list[row_pos][col_pos as usize], cur_block[1]]);
         }
     }
 
@@ -115,15 +101,15 @@ impl BlockTracker {
         let row_pos = row_pos as usize;
 
         match self.col_s_list[row_pos].binary_search(&cur_block[0]) {
-            Ok(c) => Some([self.row_s_list[row_pos], self.col_s_list[row_pos][c]]),
+            Ok(c) => Some([self.col_s_list[row_pos][c], self.row_s_list[row_pos]]),
             Err(c) => {
                 let c_l = max(c - 1, 0);
                 let c_r = min(c+1, self.col_s_list[row_pos].len()-1);
-                if (cur_block[0] - self.col_s_list[row_pos][c_l]) >=
-                    (self.col_s_list[row_pos][c_r] - cur_block[0]) {
-                        return Some([self.row_s_list[row_pos], self.col_s_list[row_pos][c_r]]);
+                if (cur_block[0] as i64 - self.col_s_list[row_pos][c_l] as i64).abs() >=
+                    (self.col_s_list[row_pos][c_r] as i64 - cur_block[0] as i64).abs() {
+                        return Some([self.col_s_list[row_pos][c_r], self.row_s_list[row_pos]]);
                 } else {
-                    return Some([self.row_s_list[row_pos], self.col_s_list[row_pos][c_l]]);
+                    return Some([self.col_s_list[row_pos][c_l], self.row_s_list[row_pos]]);
                 }
             }
         }
@@ -140,10 +126,10 @@ struct ExecTracker {
 }
 
 impl ExecTracker {
-    pub fn new() -> ExecTracker {
+    pub fn new(block_shape: [usize; 2], window_shape: [usize; 2]) -> ExecTracker {
         ExecTracker {
-            block: [0, 0],
-            window: [0, 0],
+            block: block_shape,
+            window: window_shape,
             touched_fiber_size: 0,
             dedup_fiber_size: 0,
             output_fiber_size: 0,
@@ -151,11 +137,13 @@ impl ExecTracker {
     }
 
     pub fn c_reuse(&self) -> f64 {
-        self.touched_fiber_size as f64 / self.output_fiber_size as f64 / self.window[0] as f64
+        self.touched_fiber_size as f64 / (self.output_fiber_size as f64 *
+            self.window[0] as f64 + 0.00001)
     }
 
     pub fn b_reuse(&self) -> f64 {
-        self.touched_fiber_size as f64 / self.dedup_fiber_size as f64 / self.window[1] as f64
+        self.touched_fiber_size as f64 / (self.dedup_fiber_size as f64 *
+            self.window[1] as f64 + 0.00001)
     }
 }
 
@@ -198,13 +186,9 @@ impl<'a> TrafficModel<'a> {
         };
 
         let block_shape = match accelerator {
-            Accelerator::Ip | Accelerator::Omega => [usize::MAX, 1],
+            Accelerator::Ip | Accelerator::Omega => [a_mem.indices.len() / (a_mem.indptr.len() - 1) / 2, 1],
             Accelerator::Op => [1, usize::MAX],
         };
-        // let block_shape = match accelerator {
-        //     Accelerator::Ip | Accelerator::Omega => [a_mem.indices.len() / (a_mem.indptr.len() - 1) / 2, 1],
-        //     Accelerator::Op => [1, usize::MAX],
-        // };
 
         TrafficModel {
             a_traversed: false,
@@ -353,10 +337,20 @@ impl<'a> TrafficModel<'a> {
                     match self.get_next_block() {
                         Some(block) => {
                             println!("Assign block {:?} to {}", block.get_idx(), pe_no);
-                            self.exec_trackers.insert(block.get_idx(), ExecTracker::new());
-                            let reduction_window = self.adjust_window(block.get_idx());
+                            let reduction_window = self.adjust_window(block.get_idx(), block.get_shape());
                             self.pes[pe_no].assign_block(block);
                             self.pes[pe_no].reduction_window = reduction_window;
+                            if !self.is_col_valid(self.pes[pe_no].row_s,
+                                self.pes[pe_no].reduction_window[1],
+                                self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
+                                self.pes[pe_no].cur_block.col_s,
+                                self.pes[pe_no].cur_block.width) {
+                                self.pes[pe_no].window_at_tail = true;
+                            }
+                            self.exec_trackers.insert(
+                                self.pes[pe_no].cur_block.get_idx(),
+                                ExecTracker::new(self.pes[pe_no].cur_block.get_shape(),
+                                self.pes[pe_no].reduction_window.clone()));
                         },
                         None => {
                             self.pes[pe_no].reset_pe();
@@ -375,7 +369,7 @@ impl<'a> TrafficModel<'a> {
             if self.row_s >= self.a_mem.get_row_len() { return None; }
 
             // Try to allocate along K dim.
-            if self.is_col_valid(self.row_s, self.col_s, self.block_shape[1]) {
+            if self.is_col_valid(self.row_s, self.block_shape[1], self.col_s, self.col_s, self.block_shape[0]) {
                 let block = Block {
                     width: self.block_shape[0],
                     height: self.block_shape[1],
@@ -401,11 +395,13 @@ impl<'a> TrafficModel<'a> {
         }
     }
 
-    fn is_col_valid(&self, row_s: usize, col_s: usize, row_num: usize) -> bool {
+    fn is_col_valid(&self, row_s: usize, row_num: usize, col_s: usize, b_col_s: usize, b_width: usize) -> bool {
         for rowid in row_s..row_s+row_num {
             if (rowid >= self.a_mem.get_row_len()) ||
-                (self.a_mem.get_rowptr(rowid+1) - self.a_mem.get_rowptr(rowid) <= col_s) {
-                continue;
+                (self.a_mem.get_rowptr(rowid+1) - self.a_mem.get_rowptr(rowid) <= col_s) ||
+                (col_s < b_col_s) ||
+                (col_s >= b_col_s + b_width) {
+                    continue;
             } else {
                 return true;
             }
@@ -415,7 +411,7 @@ impl<'a> TrafficModel<'a> {
     }
 
     fn is_current_tail(&self, row_s: usize, col_s: usize, height: usize, width: usize) -> bool {
-        !self.is_col_valid(row_s, col_s+width, height)
+        !self.is_col_valid(row_s, height, col_s+width, col_s, width)
     }
 
     fn slide_window(&mut self, pe_no: usize) -> bool {
@@ -425,22 +421,26 @@ impl<'a> TrafficModel<'a> {
         // If the row_s exceeds the block limitation.
         if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
         // Try to allocate along K dim.
-        if self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
-                self.pes[pe_no].reduction_window[1]) {
+        if self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].reduction_window[1],
+                self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
+                self.pes[pe_no].cur_block.col_s,
+                self.pes[pe_no].cur_block.width) {
             self.pes[pe_no].col_s += self.pes[pe_no].reduction_window[0];
         } else {
             self.pes[pe_no].col_s = self.pes[pe_no].cur_block.col_s;
             self.pes[pe_no].row_s += self.pes[pe_no].reduction_window[1];
             if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
-            while !self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].col_s, self.pes[pe_no].reduction_window[1]) {
+            while !self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].reduction_window[1], self.pes[pe_no].col_s,
+                    self.pes[pe_no].cur_block.col_s, self.pes[pe_no].cur_block.width) {
                 self.pes[pe_no].row_s += self.pes[pe_no].reduction_window[1];
                 if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
             }
         }
 
         // Check if the current window is at the tail.
-        if !self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
-            self.pes[pe_no].reduction_window[1]) {
+        if !self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].reduction_window[1],
+                self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
+                self.pes[pe_no].cur_block.col_s, self.pes[pe_no].cur_block.width) {
             self.pes[pe_no].window_at_tail = true;
         }
 
@@ -456,14 +456,13 @@ impl<'a> TrafficModel<'a> {
     }
 
     /// Adjust the reduction window for the current block.
-    fn adjust_window(&mut self, cur_block: [usize; 2]) -> [usize; 2] {
-        let neighbor_blocks = self.get_neighbor_blocks(&cur_block);
+    fn adjust_window(&mut self, cur_idx: [usize; 2], block_shape: [usize; 2]) -> [usize; 2] {
+        let neighbor_blocks = self.get_neighbor_blocks(&cur_idx);
 
         // If no neighbor blocks, then use the default reduction window shape.
         if neighbor_blocks.len() == 0 {
             return [self.lane_num, 1];
         }
-
         // We look at the neighbor blocks and find the block with the largest total reuse.
         let max_reuse_block = neighbor_blocks[neighbor_blocks
             .iter()
@@ -476,12 +475,12 @@ impl<'a> TrafficModel<'a> {
         let mut reduction_window = self.exec_trackers[&max_reuse_block].window;
 
         if cr >= br {
-            if reduction_window[1] > 1 {
+            if reduction_window[1] > 1 && reduction_window[0] * 2 <= block_shape[0] {
                 reduction_window[1] /= 2;
                 reduction_window[0] *= 2;
             }
         } else {
-            if self.reduction_window[0] > 1 {
+            if reduction_window[0] > 1 && reduction_window[1] * 2 <= block_shape[1]{
                 reduction_window[0] /= 2;
                 reduction_window[1] *= 2;
             }
@@ -567,7 +566,6 @@ impl<'a> TrafficModel<'a> {
             }
             // Update reuse tracker data.
             // println!("Fetch row data: previous touched: {}, dedup: {}", self.reuse_trackers[pe_no].touched_fiber_size, self.reuse_trackers[pe_no].dedup_fiber_size);
-            println!("Update reuse of {}", pe_no);
             self.exec_trackers.get_mut(&pe.cur_block.get_idx()).unwrap().touched_fiber_size +=
                 fibers.iter().flatten().fold(0, |acc, x| acc + x.size());
             self.exec_trackers.get_mut(&pe.cur_block.get_idx()).unwrap().dedup_fiber_size +=
@@ -596,15 +594,6 @@ impl<'a> TrafficModel<'a> {
                                 psum.data.insert(pos, sf.1 * value);
                                 psum.indptr.insert(pos, colid);
                             }
-                            // Ok(pos) => {
-                            //     psum.data[pos] += sf.1 * value;
-                            //     println!("{} * {} -> {} at pos {}", sf.1, value, psum.data[pos], pos);
-                            // },
-                            // Err(pos) => {
-                            //     psum.data.insert(pos, sf.1 * value);
-                            //     psum.indptr.insert(pos, colid);
-                            //     println!("{} * {} -> {} at pos {}", sf.1, value, psum.data[pos], pos);
-                            // }
                         }
                     }
                 }
