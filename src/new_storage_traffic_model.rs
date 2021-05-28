@@ -13,7 +13,6 @@ struct PE {
     merge_mode: bool,
     row_s: usize,
     col_s: usize,
-    window_at_tail: bool,
 }
 
 impl PE {
@@ -21,7 +20,6 @@ impl PE {
         self.row_s = block.row_s;
         self.col_s = block.col_s;
         self.cur_block = block;
-        self.window_at_tail = false;
     }
 
     pub fn reset_pe(&mut self) {
@@ -29,7 +27,6 @@ impl PE {
         self.col_s = 0;
         self.cur_block = Block::new(0, 0, 0, 0, false);
         self.reduction_window= [0, 0];
-        self.window_at_tail = false;
     }
 
 }
@@ -40,7 +37,6 @@ struct Block {
     pub height: usize,
     pub row_s: usize,
     pub col_s: usize,
-    pub is_tail: bool,
 }
 
 impl Block {
@@ -50,7 +46,6 @@ impl Block {
             height: height,
             row_s: row_s,
             col_s: col_s,
-            is_tail: is_tail,
         }
     }
 
@@ -203,7 +198,6 @@ impl<'a> TrafficModel<'a> {
                     merge_mode: false,
                     row_s: 0,
                     col_s: 0,
-                    window_at_tail: false,
                 };
                 pe_num
             ],
@@ -252,7 +246,7 @@ impl<'a> TrafficModel<'a> {
                     self.exec_trackers[&self.pes[i].cur_block.get_idx()].dedup_fiber_size,
                     self.exec_trackers[&self.pes[i].cur_block.get_idx()].output_fiber_size);
 
-                // Update reuse tracker if it is not in the merge mode.
+                    // Update reuse tracker if it is not in the merge mode.
                 if !self.pes[i].merge_mode {
                     self.exec_trackers.get_mut(&self.pes[i].cur_block.get_idx())
                         .unwrap().output_fiber_size += 
@@ -265,11 +259,14 @@ impl<'a> TrafficModel<'a> {
                     for row in rowidxs.iter() {
                         self.merge_queue.push(*row);
                     }
-                } else if !pe.merge_mode && pe.cur_block.height != 0 && pe.window_at_tail {
+                } else if !pe.merge_mode && pe.cur_block.height != 0 {
                     // Finish one traverse over current rows.
                     // Add the finished rows into merge queue and turn into merge mode.
                     for row in rowidxs.iter() {
-                        self.merge_queue.push(*row);
+                        if self.a_mem.get_rowptr(*row+1) - self.a_mem.get_rowptr(*row) <=
+                            pe.col_s + pe.reduction_window[0] {
+                            self.merge_queue.push(*row);
+                        }
                     }
                 }
 
@@ -345,7 +342,6 @@ impl<'a> TrafficModel<'a> {
                                 self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
                                 self.pes[pe_no].cur_block.col_s,
                                 self.pes[pe_no].cur_block.width) {
-                                self.pes[pe_no].window_at_tail = true;
                             }
                             self.exec_trackers.insert(
                                 self.pes[pe_no].cur_block.get_idx(),
@@ -375,8 +371,6 @@ impl<'a> TrafficModel<'a> {
                     height: self.block_shape[1],
                     row_s: self.row_s,
                     col_s: self.col_s,
-                    is_tail: self.is_current_tail(self.row_s, self.col_s,
-                self.block_shape[1], self.block_shape[0]),
                 };
                 if block.col_s == 0 {
                     self.block_topo.row_s_list.push(block.row_s);
@@ -410,10 +404,6 @@ impl<'a> TrafficModel<'a> {
         return false;
     }
 
-    fn is_current_tail(&self, row_s: usize, col_s: usize, height: usize, width: usize) -> bool {
-        !self.is_col_valid(row_s, height, col_s+width, col_s, width)
-    }
-
     fn slide_window(&mut self, pe_no: usize) -> bool {
         // If no block has been assigned.
         if self.pes[pe_no].cur_block.height == 0 { return false; }
@@ -441,7 +431,6 @@ impl<'a> TrafficModel<'a> {
         if !self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].reduction_window[1],
                 self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
                 self.pes[pe_no].cur_block.col_s, self.pes[pe_no].cur_block.width) {
-            self.pes[pe_no].window_at_tail = true;
         }
 
         println!("{} shift to row_s {} col_s {}, block: row_s {} col_s {} height {} width {}",
