@@ -1,6 +1,6 @@
 use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, hash::Hash, ops::Range};
 
-use itertools::{Itertools, Merge, izip, merge, merge_join_by};
+use itertools::{Itertools, Merge, MergeJoinBy, izip, merge, merge_join_by};
 use storage::{LRUCache, VectorStorage};
 
 use crate::{print_type_of, storage::{self, CsrMatStorage, CsrRow, StorageAPI, StorageError}};
@@ -142,6 +142,21 @@ impl ExecTracker {
     }
 }
 
+#[derive(Debug, Clone)]
+struct MergeTracker {
+    pub finished: bool,
+    pub blocks: Vec<[usize; 2]>,
+}
+
+impl MergeTracker {
+    pub fn new() -> MergeTracker {
+        MergeTracker {
+            finished: false,
+            blocks: vec![],
+        }
+    }
+}
+
 pub struct TrafficModel<'a> {
     a_traversed: bool,
     reduction_window: [usize; 2],
@@ -156,9 +171,11 @@ pub struct TrafficModel<'a> {
     block_topo: BlockTracker, /// Track the relative pos of blocks.
     exec_trackers: HashMap<[usize; 2], ExecTracker>, /// Track the execution of each block.
     output_base_addr: usize,
-    output_tracker: HashMap<usize, Vec<usize>>,
+    output_trackers: HashMap<usize, Vec<usize>>,
     row_s: usize,
     col_s: usize,
+    merge_trackers: HashMap<usize, MergeTracker>,
+    exec_round: usize,
 }
 
 impl<'a> TrafficModel<'a> {
@@ -168,6 +185,8 @@ impl<'a> TrafficModel<'a> {
         cache_size: usize,
         word_byte: usize,
         output_base_addr: usize,
+        default_reduction_window: [usize; 2],
+        default_block_shape: [usize; 2],
         a_mem: &'a mut CsrMatStorage,
         b_mem: &'a mut CsrMatStorage,
         psum_mem: &'a mut VectorStorage,
@@ -175,25 +194,15 @@ impl<'a> TrafficModel<'a> {
     ) -> TrafficModel<'a> {
         // Init from the inner-product dataflow.
         // Can be changed to be adaptive.
-        let reduction_window = match accelerator {
-            Accelerator::Ip | Accelerator::Omega => [lane_num, 1],
-            Accelerator::Op => [1, lane_num],
-        };
-
-        let block_shape = match accelerator {
-            Accelerator::Ip | Accelerator::Omega => [a_mem.indices.len() / (a_mem.indptr.len() - 1) / 2, 1],
-            Accelerator::Op => [1, usize::MAX],
-        };
-
         TrafficModel {
             a_traversed: false,
-            reduction_window: reduction_window,
+            reduction_window: default_reduction_window.clone(),
             pe_num: pe_num,
             lane_num: lane_num,
             fiber_cache: LRUCache::new(cache_size, word_byte, output_base_addr, b_mem, psum_mem),
             pes: vec![
                 PE {
-                    reduction_window: [lane_num, 1],
+                    reduction_window: default_reduction_window.clone(),
                     cur_block: Block::new(0, 0, 0, 0, false),
                     merge_mode: false,
                     row_s: 0,
@@ -204,20 +213,24 @@ impl<'a> TrafficModel<'a> {
             a_mem: a_mem,
             merge_queue: vec![],
             accelerator: accelerator,
-            block_shape: block_shape,
+            block_shape: default_block_shape,
             block_topo: BlockTracker::new(),
             exec_trackers: HashMap::new(),
             output_base_addr: output_base_addr,
-            output_tracker: HashMap::new(),
+            output_trackers: HashMap::new(),
             row_s: 0,
             col_s: 0,
+            merge_trackers: HashMap::new(),
+            exec_round: 0,
         }
     }
 
     pub fn execute(&mut self) {
+        // Reset the execution round counter.
+        self.exec_round = 0;
         loop {
             println!("----");
-
+            self.exec_round += 1;
             // Assign jobs to PEs. If no jobs can be assigned, end execution.
             if !self.assign_jobs() { break; }
 
@@ -246,7 +259,7 @@ impl<'a> TrafficModel<'a> {
                     self.exec_trackers[&self.pes[i].cur_block.get_idx()].dedup_fiber_size,
                     self.exec_trackers[&self.pes[i].cur_block.get_idx()].output_fiber_size);
 
-                    // Update reuse tracker if it is not in the merge mode.
+                // Update reuse tracker if it is not in the merge mode.
                 if !self.pes[i].merge_mode {
                     self.exec_trackers.get_mut(&self.pes[i].cur_block.get_idx())
                         .unwrap().output_fiber_size += 
@@ -263,9 +276,13 @@ impl<'a> TrafficModel<'a> {
                     // Finish one traverse over current rows.
                     // Add the finished rows into merge queue and turn into merge mode.
                     for row in rowidxs.iter() {
-                        if self.a_mem.get_rowptr(*row+1) - self.a_mem.get_rowptr(*row) <=
-                            pe.col_s + pe.reduction_window[0] {
-                            self.merge_queue.push(*row);
+                        if !self.is_window_valid(*row, 1, pe.col_s+pe.reduction_window[0],
+                            pe.cur_block.col_s, pe.cur_block.width) {
+                            let tracker = self.merge_trackers.get_mut(row).unwrap();
+                            tracker.blocks.retain(|x|*x != pe.cur_block.get_idx());
+                            if tracker.finished && tracker.blocks.len() == 0 {
+                                self.merge_queue.push(*row);
+                            }
                         }
                     }
                 }
@@ -295,7 +312,7 @@ impl<'a> TrafficModel<'a> {
         self.merge_queue.sort();
         self.merge_queue.dedup();
         while i != self.merge_queue.len() {
-            let psum_addrs = self.output_tracker.get(&self.merge_queue[i]).unwrap();
+            let psum_addrs = self.output_trackers.get(&self.merge_queue[i]).unwrap();
             if psum_addrs.len() == 1 {
                 println!("Assign jobs: swapout addr {} of {}", psum_addrs[0], self.merge_queue[i]);
                 self.merge_queue.remove(i);
@@ -337,12 +354,16 @@ impl<'a> TrafficModel<'a> {
                             let reduction_window = self.adjust_window(block.get_idx(), block.get_shape());
                             self.pes[pe_no].assign_block(block);
                             self.pes[pe_no].reduction_window = reduction_window;
-                            if !self.is_col_valid(self.pes[pe_no].row_s,
+
+                            // Slide window if the initial window is empty.
+                            if !self.is_window_valid(self.pes[pe_no].row_s,
                                 self.pes[pe_no].reduction_window[1],
-                                self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
+                                self.pes[pe_no].col_s,
                                 self.pes[pe_no].cur_block.col_s,
                                 self.pes[pe_no].cur_block.width) {
+                                    self.slide_window(pe_no);
                             }
+
                             self.exec_trackers.insert(
                                 self.pes[pe_no].cur_block.get_idx(),
                                 ExecTracker::new(self.pes[pe_no].cur_block.get_shape(),
@@ -363,9 +384,8 @@ impl<'a> TrafficModel<'a> {
     fn get_next_block(&mut self) -> Option<Block> {
         loop {
             if self.row_s >= self.a_mem.get_row_len() { return None; }
-
             // Try to allocate along K dim.
-            if self.is_col_valid(self.row_s, self.block_shape[1], self.col_s, self.col_s, self.block_shape[0]) {
+            if self.is_block_valid(self.row_s, self.block_shape[1], self.col_s) {
                 let block = Block {
                     width: self.block_shape[0],
                     height: self.block_shape[1],
@@ -378,6 +398,17 @@ impl<'a> TrafficModel<'a> {
                 }
                 self.block_topo.col_s_list.last_mut().unwrap().push(block.col_s);
                 self.col_s += self.block_shape[0];
+
+                // Append the new block to the merge tracker.
+                for rowid in block.row_s..block.row_s+block.height {
+                    if self.is_col_s_valid(rowid, block.col_s) {
+                        let row_finished = !self.is_col_s_valid(rowid, block.col_s+block.width);
+                        let tracker = self.merge_trackers.entry(rowid)
+                            .or_insert(MergeTracker::new());
+                        tracker.blocks.push(block.get_idx());
+                        tracker.finished = row_finished;
+                    }
+                }
                 return Some(block);
             } else {
                 // Block shape adaptation can be added here. For now we only support adjust block
@@ -389,10 +420,9 @@ impl<'a> TrafficModel<'a> {
         }
     }
 
-    fn is_col_valid(&self, row_s: usize, row_num: usize, col_s: usize, b_col_s: usize, b_width: usize) -> bool {
+    fn is_window_valid(&self, row_s: usize, row_num: usize, col_s: usize, b_col_s: usize, b_width: usize) -> bool {
         for rowid in row_s..row_s+row_num {
-            if (rowid >= self.a_mem.get_row_len()) ||
-                (self.a_mem.get_rowptr(rowid+1) - self.a_mem.get_rowptr(rowid) <= col_s) ||
+            if !self.is_col_s_valid(rowid, col_s) ||
                 (col_s < b_col_s) ||
                 (col_s >= b_col_s + b_width) {
                     continue;
@@ -404,6 +434,27 @@ impl<'a> TrafficModel<'a> {
         return false;
     }
 
+    fn is_block_valid(&self, row_s: usize, row_num: usize, col_s: usize) -> bool {
+        for rowid in row_s..row_s+row_num {
+            if !self.is_col_s_valid(rowid, col_s) {
+                continue;
+            } else {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    fn is_col_s_valid(&self, rowid: usize, col_s: usize) -> bool {
+        if (rowid >= self.a_mem.get_row_len()) ||
+            (self.a_mem.get_rowptr(rowid+1) - self.a_mem.get_rowptr(rowid) <= col_s) {
+            return false;
+        } else {
+            return true;
+        }
+    }
+
     fn slide_window(&mut self, pe_no: usize) -> bool {
         // If no block has been assigned.
         if self.pes[pe_no].cur_block.height == 0 { return false; }
@@ -411,7 +462,7 @@ impl<'a> TrafficModel<'a> {
         // If the row_s exceeds the block limitation.
         if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
         // Try to allocate along K dim.
-        if self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].reduction_window[1],
+        if self.is_window_valid(self.pes[pe_no].row_s, self.pes[pe_no].reduction_window[1],
                 self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
                 self.pes[pe_no].cur_block.col_s,
                 self.pes[pe_no].cur_block.width) {
@@ -420,7 +471,7 @@ impl<'a> TrafficModel<'a> {
             self.pes[pe_no].col_s = self.pes[pe_no].cur_block.col_s;
             self.pes[pe_no].row_s += self.pes[pe_no].reduction_window[1];
             if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
-            while !self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].reduction_window[1], self.pes[pe_no].col_s,
+            while !self.is_window_valid(self.pes[pe_no].row_s, self.pes[pe_no].reduction_window[1], self.pes[pe_no].col_s,
                     self.pes[pe_no].cur_block.col_s, self.pes[pe_no].cur_block.width) {
                 self.pes[pe_no].row_s += self.pes[pe_no].reduction_window[1];
                 if self.pes[pe_no].row_s >= self.pes[pe_no].cur_block.row_s + self.pes[pe_no].cur_block.height { return false; }
@@ -428,7 +479,7 @@ impl<'a> TrafficModel<'a> {
         }
 
         // Check if the current window is at the tail.
-        if !self.is_col_valid(self.pes[pe_no].row_s, self.pes[pe_no].reduction_window[1],
+        if !self.is_window_valid(self.pes[pe_no].row_s, self.pes[pe_no].reduction_window[1],
                 self.pes[pe_no].col_s+self.pes[pe_no].reduction_window[0],
                 self.pes[pe_no].cur_block.col_s, self.pes[pe_no].cur_block.width) {
         }
@@ -503,7 +554,7 @@ impl<'a> TrafficModel<'a> {
             let mut unused_lane_num = self.lane_num;
             while unused_lane_num > 0 && self.merge_queue.len() > 0 {
                 let rowidx = self.merge_queue.first().unwrap();
-                let psums = self.output_tracker.get_mut(rowidx).unwrap();
+                let psums = self.output_trackers.get_mut(rowidx).unwrap();
                 let used_num = min(psums.len(), unused_lane_num);
                 let mut fbs = vec![];
                 let mut sfs = vec![];
@@ -594,20 +645,19 @@ impl<'a> TrafficModel<'a> {
 
     fn write_psum(&mut self, rowidxs: Vec<usize>, output_fibers: Vec<CsrRow>) {
         for (rowidx, mut output_fiber) in rowidxs.into_iter().zip(output_fibers.into_iter()) {
-            self.output_tracker
+            self.output_trackers
                 .entry(rowidx)
                 .or_default()
                 .push(self.output_base_addr);
-            println!("write_psum: {:?}", self.output_tracker[&rowidx]);
+            println!("write_psum: {:?}", self.output_trackers[&rowidx]);
             output_fiber.rowptr = self.output_base_addr;
             self.output_base_addr += 1;
             self.fiber_cache.write(output_fiber);
         }
     }
 
-    pub fn get_result(&mut self) -> Vec<CsrRow> {
+    pub fn get_exec_result(&mut self) -> Vec<CsrRow> {
         let mut c = vec![];
-        // for rowid in 0..self.a_mem.indptr.len() - 1 {
         for rowid in 0..self.a_mem.get_row_len() {
             let mut csrrow = CsrRow::new(rowid);
             // if self.a_mem.indptr[rowid+1] - self.a_mem.indptr[rowid] > 0 {
@@ -616,7 +666,7 @@ impl<'a> TrafficModel<'a> {
                     self.a_mem.row_remap[&rowid]
                 } else {rowid};
                 // let raw_rowid = self.a_mem.row_remap[&rowid];
-                let addrs = self.output_tracker.get(&rowid).unwrap();
+                let addrs = self.output_trackers.get(&rowid).unwrap();
                 println!("Get result: row: {} addrs: {:?}", raw_rowid, &addrs);
                 assert!(addrs.len() == 1, "Partially merged psums! {:?} of row {}", &addrs, raw_rowid);
                 let addr = addrs[0];
@@ -642,6 +692,10 @@ impl<'a> TrafficModel<'a> {
 
     pub fn get_c_mat_stat(&self) -> (usize, usize) {
         (self.fiber_cache.psum_mem.read_count, self.fiber_cache.psum_mem.write_count)
+    }
+
+    pub fn get_exec_round(&self) -> usize {
+        self.exec_round
     }
 
 }

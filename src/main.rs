@@ -64,12 +64,29 @@ fn main() {
             //     &mut dram_psum,
             //     cli.accelerator.clone(),
             // );
+
+            // Determine the default window & block shape.
+            let default_reduction_window = match cli.accelerator {
+                Accelerator::Ip | Accelerator::Omega => [omega_config.lane_num, 1],
+                Accelerator::Op => [1, omega_config.lane_num],
+            };
+
+            let default_block_shape = match cli.accelerator {
+                Accelerator::Ip => [usize::MAX, 1],
+                // Accelerator::Omega => [dram_a.indices.len() / (dram_a.indptr.len() - 1) / 2, 2],
+                Accelerator::Omega => [dram_a.indices.len() / (dram_a.indptr.len() - 1) / 2,
+                    dram_a.indices.len() / (dram_a.indptr.len() - 1) / 2],
+                Accelerator::Op => [1, usize::MAX],
+            };
+
             let mut traffic_model = new_storage_traffic_model::TrafficModel::new(
                 omega_config.pe_num,
                 omega_config.lane_num,
                 omega_config.cache_size,
                 omega_config.word_byte,
                 output_base_addr,
+                default_reduction_window,
+                default_block_shape,
                 &mut dram_a,
                 &mut dram_b,
                 &mut dram_psum,
@@ -78,13 +95,15 @@ fn main() {
 
             traffic_model.execute();
 
-            let result = traffic_model.get_result();
+            let result = traffic_model.get_exec_result();
             let a_count = traffic_model.get_a_mat_stat();
             let b_count = traffic_model.get_b_mat_stat();
             let c_count = traffic_model.get_c_mat_stat();
+            let exec_count = traffic_model.get_exec_round();
 
             println!("-----Result-----");
             println!("-----Access count");
+            println!("Execution count: {}", exec_count);
             println!("A matrix count: read {} write {}", a_count.0, a_count.1);
             println!("B matrix count: read {} write {}", b_count.0, b_count.1);
             println!("C matrix count: read {} write {}", c_count.0, c_count.1);
