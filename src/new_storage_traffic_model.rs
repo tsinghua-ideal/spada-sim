@@ -244,16 +244,19 @@ impl<'a> TrafficModel<'a> {
 
             // Each PE execute a window.
             for i in 0..self.pe_num {
+                // Find if the pe is uninitialized.
+                if self.pes[i].reduction_window[0] == 0 { continue; }
                 // Fetch data from memory & cache.
                 let (rowidxs, scaling_factors, fibers) = self.fetch_window_data(i);
                 println!("PE: {} scaling factors: {:?}", i,
                     scaling_factors.iter().map(|x| x.iter().map(|y| y.0).collect::<Vec<usize>>()).collect::<Vec<Vec<usize>>>());
 
                 // Compute the window.
-                let output_fibers = self.compute_a_window(&rowidxs, scaling_factors, fibers);
+                let output_fibers = self.compute_a_window(&rowidxs, &scaling_factors, fibers);
                 println!("Compute: rows: {:?} cols: {}-{} merge_mode: {} output fiber size: {:?}",
                     &rowidxs, self.pes[i].col_s, self.pes[i].col_s+self.pes[i].reduction_window[0],
-                    &self.pes[i].merge_mode, output_fibers.iter().map(|c| c.len()).collect::<Vec<usize>>());
+                    &self.pes[i].merge_mode, output_fibers.iter().map(
+                        |c| c.as_ref().map_or(0, |v| v.len())).collect::<Vec<usize>>());
                 println!("Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}",
                     self.exec_trackers[&self.pes[i].cur_block.get_idx()].touched_fiber_size,
                     self.exec_trackers[&self.pes[i].cur_block.get_idx()].dedup_fiber_size,
@@ -263,7 +266,9 @@ impl<'a> TrafficModel<'a> {
                 if !self.pes[i].merge_mode {
                     self.exec_trackers.get_mut(&self.pes[i].cur_block.get_idx())
                         .unwrap().output_fiber_size += 
-                        output_fibers.iter().fold(0, |acc, x| acc + x.size());
+                        output_fibers.iter().fold(0,
+                            |acc, x| acc +
+                            x.as_ref().map_or(0, |v| v.size()));
                 }
 
                 // Update work mode.
@@ -275,9 +280,12 @@ impl<'a> TrafficModel<'a> {
                 } else if !pe.merge_mode && pe.cur_block.height != 0 {
                     // Finish one traverse over current rows.
                     // Add the finished rows into merge queue and turn into merge mode.
-                    for row in rowidxs.iter() {
-                        if !self.is_window_valid(*row, 1, pe.col_s+pe.reduction_window[0],
+                    for (row_pos, row) in rowidxs.iter().enumerate() {
+                        // println!("row: {}", row);
+                        if output_fibers[row_pos].is_some() &&
+                            !self.is_window_valid(*row, 1, pe.col_s+pe.reduction_window[0],
                             pe.cur_block.col_s, pe.cur_block.width) {
+                            // println!("merge_trackers: {:?}", self.merge_trackers.keys().map(|x| *x).collect::<Vec<usize>>());
                             let tracker = self.merge_trackers.get_mut(row).unwrap();
                             tracker.blocks.retain(|x|*x != pe.cur_block.get_idx());
                             if tracker.finished && tracker.blocks.len() == 0 {
@@ -342,7 +350,7 @@ impl<'a> TrafficModel<'a> {
                 merge_pe_num -= 1;
             } else {
                 println!("No merge to do.");
-                println!("Reduction window: {:?}", self.reduction_window);
+                println!("Current reduction window: {:?}", self.pes[pe_no].reduction_window);
                 self.pes[pe_no].merge_mode = false;
                 // Try to shift the window in the block. Otherwise assign new block to PE.
                 if !self.slide_window(pe_no) {
@@ -354,7 +362,7 @@ impl<'a> TrafficModel<'a> {
                             let reduction_window = self.adjust_window(block.get_idx(), block.get_shape());
                             self.pes[pe_no].assign_block(block);
                             self.pes[pe_no].reduction_window = reduction_window;
-
+                            println!("Adjust reduction window: {:?}", self.pes[pe_no].reduction_window);
                             // Slide window if the initial window is empty.
                             if !self.is_window_valid(self.pes[pe_no].row_s,
                                 self.pes[pe_no].reduction_window[1],
@@ -573,7 +581,7 @@ impl<'a> TrafficModel<'a> {
                 unused_lane_num -= used_num;
             }
         } else {
-            rowidxs = (pe.row_s..pe.row_s+pe.reduction_window[1])
+            rowidxs = (pe.row_s..min(pe.row_s+pe.reduction_window[1], self.a_mem.get_row_len()))
                 .filter(|x|self.a_mem.get_rowptr(*x+1) as i32 - self.a_mem.get_rowptr(*x) as i32 >= 0)
                 .collect();
             let mut broadcast_cache: HashMap<usize, CsrRow> = HashMap::new();
@@ -619,12 +627,16 @@ impl<'a> TrafficModel<'a> {
     fn compute_a_window(
         &self,
         rowidxs: &Vec<usize>,
-        scaling_factors: Vec<Vec<(usize, f64)>>,
+        scaling_factors: &Vec<Vec<(usize, f64)>>,
         fibers: Vec<Vec<CsrRow>>)
-        -> Vec<CsrRow> {
+        -> Vec<Option<CsrRow>> {
             let mut psums = vec![];
             for (rowidx, sfs, fbs) in izip!(rowidxs, scaling_factors, fibers) {
                 // Compute psum.
+                if sfs.len() == 0 {
+                    psums.push(None);
+                    continue;
+                }
                 let mut psum = CsrRow::new(*rowidx);
                 for (sf, fb) in izip!(sfs, fbs) {
                     for (colid, value) in izip!(fb.indptr, fb.data) {
@@ -637,19 +649,21 @@ impl<'a> TrafficModel<'a> {
                         }
                     }
                 }
-                psums.push(psum);
+                psums.push(Some(psum));
             }
 
-            return psums;
+            psums
         }
 
-    fn write_psum(&mut self, rowidxs: Vec<usize>, output_fibers: Vec<CsrRow>) {
-        for (rowidx, mut output_fiber) in rowidxs.into_iter().zip(output_fibers.into_iter()) {
+    fn write_psum(&mut self, rowidxs: Vec<usize>, output_fibers: Vec<Option<CsrRow>>) {
+        for (rowidx, output_fiber) in
+            rowidxs.into_iter().zip(output_fibers.into_iter()).filter(|(_,y)| y.is_some()) {
             self.output_trackers
                 .entry(rowidx)
                 .or_default()
                 .push(self.output_base_addr);
             println!("write_psum: {:?}", self.output_trackers[&rowidx]);
+            let mut output_fiber = output_fiber.unwrap();
             output_fiber.rowptr = self.output_base_addr;
             self.output_base_addr += 1;
             self.fiber_cache.write(output_fiber);
@@ -696,6 +710,10 @@ impl<'a> TrafficModel<'a> {
 
     pub fn get_exec_round(&self) -> usize {
         self.exec_round
+    }
+
+    pub fn get_cache_stat(&self) -> (usize, usize) {
+        (self.fiber_cache.read_count, self.fiber_cache.write_count)
     }
 
 }

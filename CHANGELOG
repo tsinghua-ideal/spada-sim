@@ -7,11 +7,20 @@
 2 TODO: Inspect the C read count.
 
 --2021.05.28--
-1. Fix 05.28.2.
-3. TODO: When the tail window finished, the entire row may not be finished if merge stage involved.
+1. Fix 05.27.2.
+2. TODO: When the tail window finished, the entire row may not be finished if merge stage involved.
     -> Register each row in block, release when finished. When all be finished, then it can be merged.
     -> Maintain a block-wide tail & a window-wide tail. Register the block-wide piecies when assigning blocks,
        for each block check if it is the tail block of some rows, and tag the row finished. Every time
        a row in a block is finished, unregister the block from the row.
        If all blocks are removed from the row and the row is finished, then it can be merged.
-4. TODO: col_s on the compressed format; while row_s on the dense format (contain empty rows).
+3. TODO: col_s on the compressed format; while row_s on the dense format (contain empty rows).
+
+--2021.05.29--
+1. Fix 05.28.2.
+2. TODO: Support listing the workload candidate.
+
+--2021-05.30--
+1. Fix 05.29.2.
+2. TODO: Fix the problems caused by empty output fiber (or avoid the empty output fiber).
+3. Fix 05.30.2.

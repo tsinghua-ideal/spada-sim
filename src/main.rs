@@ -23,6 +23,20 @@ use structopt::StructOpt;
 use crate::frontend::{parse_config, Cli, Simulator, Accelerator, WorkloadCate};
 use crate::preprocessing::affinity_based_row_reordering;
 
+
+// Workload included:
+// ss: ['2cubes_sphere', 'amazon0312', 'ca-CondMat', 'cage12', 'cit-Patents',
+// 'cop20k_A', 'email-Enron', 'filter3D', 'm133-b3', 'mario002', 'offshore', 'p2p-Gnutella31',
+// 'patents_main', 'poisson3Da', 'roadNet-CA', 'scircuit', 'web-Google', 'webbase-1M', 'wiki-Vote',
+// 'degme', 'EternityII_Etilde', 'Ge87H76', 'Ge99H100', 'gupta2', 'm_t1', 'Maragal_7', 'msc10848',
+// 'nemsemm1', 'NotreDame_actors', 'opt1', 'raefsky3', 'ramage02', 'relat8', 'ship_001', 'sme3Db',
+// 'vsp_bcsstk30_500sep_10in_1Kout', 'x104']
+// nn: ['alexnetconv0', 'alexnetconv1', 'alexnetconv2', 'alexnetconv3', 'alexnetconv4',
+// 'alexnetfc0', 'alexnetfc1', 'alexnetfc2', 'resnet50conv0', 'resnet50layer1_conv1',
+// 'resnet50layer1_conv2', 'resnet50layer1_conv3', 'resnet50layer2_conv1', 'resnet50layer2_conv2',
+// 'resnet50layer2_conv3', 'resnet50layer3_conv1', 'resnet50layer3_conv2', 'resnet50layer3_conv3',
+// 'resnet50layer4_conv1', 'resnet50layer4_conv2', 'resnet50layer4_conv3', 'resnet50fc']
+
 fn main() {
     let omega_config = parse_config("omega_config.json").unwrap();
     let cli: Cli = Cli::from_args();
@@ -74,8 +88,7 @@ fn main() {
             let default_block_shape = match cli.accelerator {
                 Accelerator::Ip => [usize::MAX, 1],
                 // Accelerator::Omega => [dram_a.indices.len() / (dram_a.indptr.len() - 1) / 2, 2],
-                Accelerator::Omega => [dram_a.indices.len() / (dram_a.indptr.len() - 1) / 2,
-                    dram_a.indices.len() / (dram_a.indptr.len() - 1) / 2],
+                Accelerator::Omega => [omega_config.lane_num, omega_config.lane_num],
                 Accelerator::Op => [1, usize::MAX],
             };
 
@@ -100,6 +113,7 @@ fn main() {
             let b_count = traffic_model.get_b_mat_stat();
             let c_count = traffic_model.get_c_mat_stat();
             let exec_count = traffic_model.get_exec_round();
+            let cache_count = traffic_model.get_cache_stat();
 
             println!("-----Result-----");
             println!("-----Access count");
@@ -107,6 +121,7 @@ fn main() {
             println!("A matrix count: read {} write {}", a_count.0, a_count.1);
             println!("B matrix count: read {} write {}", b_count.0, b_count.1);
             println!("C matrix count: read {} write {}", c_count.0, c_count.1);
+            println!("Cache count: read {} write {}", cache_count.0, cache_count.1);
 
             println!("-----Output product matrix");
             for idx in 0..min(result.len(), 10) {
