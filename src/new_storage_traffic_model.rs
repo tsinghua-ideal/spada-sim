@@ -245,7 +245,7 @@ impl<'a> TrafficModel<'a> {
             // Each PE execute a window.
             for i in 0..self.pe_num {
                 // Find if the pe is uninitialized.
-                if self.pes[i].reduction_window[0] == 0 { continue; }
+                if !self.pes[i].merge_mode && (self.pes[i].reduction_window[0] == 0) { continue; }
                 // Fetch data from memory & cache.
                 let (rowidxs, scaling_factors, fibers) = self.fetch_window_data(i);
                 println!("PE: {} scaling factors: {:?}", i,
@@ -257,10 +257,12 @@ impl<'a> TrafficModel<'a> {
                     &rowidxs, self.pes[i].col_s, self.pes[i].col_s+self.pes[i].reduction_window[0],
                     &self.pes[i].merge_mode, output_fibers.iter().map(
                         |c| c.as_ref().map_or(0, |v| v.len())).collect::<Vec<usize>>());
-                println!("Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}",
-                    self.exec_trackers[&self.pes[i].cur_block.get_idx()].touched_fiber_size,
-                    self.exec_trackers[&self.pes[i].cur_block.get_idx()].dedup_fiber_size,
-                    self.exec_trackers[&self.pes[i].cur_block.get_idx()].output_fiber_size);
+                if !self.pes[i].merge_mode {
+                    println!("Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}",
+                        self.exec_trackers[&self.pes[i].cur_block.get_idx()].touched_fiber_size,
+                        self.exec_trackers[&self.pes[i].cur_block.get_idx()].dedup_fiber_size,
+                        self.exec_trackers[&self.pes[i].cur_block.get_idx()].output_fiber_size);
+                }
 
                 // Update reuse tracker if it is not in the merge mode.
                 if !self.pes[i].merge_mode {

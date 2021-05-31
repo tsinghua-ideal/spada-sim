@@ -86,8 +86,7 @@ fn main() {
             };
 
             let default_block_shape = match cli.accelerator {
-                Accelerator::Ip => [usize::MAX, 1],
-                // Accelerator::Omega => [dram_a.indices.len() / (dram_a.indptr.len() - 1) / 2, 2],
+                Accelerator::Ip => [omega_config.lane_num, 1],
                 Accelerator::Omega => [omega_config.lane_num, omega_config.lane_num],
                 Accelerator::Op => [1, usize::MAX],
             };
