@@ -24,3 +24,7 @@
 1. Fix 05.29.2.
 2. TODO: Fix the problems caused by empty output fiber (or avoid the empty output fiber).
 3. Fix 05.30.2.
+
+--2021-05.31--
+1. TODO: Add bash script to run multiple workloads.
+2. TODO: Move new_storage_traffic_model as storage_traffic_model.
