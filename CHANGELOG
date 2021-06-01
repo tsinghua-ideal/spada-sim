@@ -20,11 +20,17 @@
 1. Fix 05.28.2.
 2. TODO: Support listing the workload candidate.
 
---2021-05.30--
+--2021.05.30--
 1. Fix 05.29.2.
 2. TODO: Fix the problems caused by empty output fiber (or avoid the empty output fiber).
 3. Fix 05.30.2.
 
---2021-05.31--
+--2021.05.31--
 1. TODO: Add bash script to run multiple workloads.
 2. TODO: Move new_storage_traffic_model as storage_traffic_model.
+3. Fix 05.31.1, 05.31.2.
+
+--2021.06.01--
+1. TODO: Shrink the cache size to see if the swapout case appears.
+2. TODO: Sample the reduction window shape to test the oracle reduction window performance.
+3. TODO: Test the different block scheme (block shape, size).

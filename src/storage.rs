@@ -1,6 +1,12 @@
 use fmt::write;
 use itertools::izip;
-use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, fmt, hash::Hash, ops::Index};
+use std::{
+    cmp::{max, min},
+    collections::{HashMap, VecDeque},
+    fmt,
+    hash::Hash,
+    ops::Index,
+};
 
 use crate::gemm::GEMM;
 
@@ -68,7 +74,13 @@ impl CsrRow {
 impl fmt::Display for CsrRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let display_len = min(self.data.len(), 5);
-        write!(f, "rowptr: {} indptr: {:?} data: {:?}", self.rowptr, &self.indptr[0..display_len], &self.data[0..display_len])
+        write!(
+            f,
+            "rowptr: {} indptr: {:?} data: {:?}",
+            self.rowptr,
+            &self.indptr[0..display_len],
+            &self.data[0..display_len]
+        )
     }
 }
 
@@ -107,13 +119,7 @@ pub struct CsrMatStorage {
 }
 
 impl StorageAPI for CsrMatStorage {
-    fn read(
-        &mut self,
-        rawp: usize,
-        col_s: usize,
-        ele_num: usize,
-    ) -> Result<CsrRow, StorageError> {
-
+    fn read(&mut self, rawp: usize, col_s: usize, ele_num: usize) -> Result<CsrRow, StorageError> {
         if rawp >= self.indptr.len() {
             return Err(StorageError::ReadOverBoundError(format!(
                 "Invalid row_ptr: {}",
@@ -123,14 +129,16 @@ impl StorageAPI for CsrMatStorage {
 
         let row_ptr = if self.remapped {
             self.row_remap[&rawp]
-        } else { rawp };
+        } else {
+            rawp
+        };
 
         let cur_row_pos = self.indptr[row_ptr];
         let end_row_pos = self.indptr[row_ptr + 1];
         let s = cur_row_pos + col_s;
         let t = s + ele_num;
         if (s <= t) && (t <= end_row_pos) {
-            let csrrow = CsrRow{
+            let csrrow = CsrRow {
                 rowptr: rawp,
                 data: self.data[s..t].to_vec(),
                 indptr: self.indices[s..t].to_vec(),
@@ -208,9 +216,10 @@ impl CsrMatStorage {
         }
     }
 
-    pub fn get_row_len(&self) -> usize { self.indptr.len() - 1}
+    pub fn get_row_len(&self) -> usize {
+        self.indptr.len() - 1
+    }
 }
-
 
 pub struct VectorStorage {
     pub data: HashMap<usize, CsrRow>,
@@ -219,7 +228,12 @@ pub struct VectorStorage {
 }
 
 impl StorageAPI for VectorStorage {
-    fn read(&mut self, row_ptr: usize, col_s: usize, ele_num: usize) -> Result<CsrRow, StorageError> {
+    fn read(
+        &mut self,
+        row_ptr: usize,
+        col_s: usize,
+        ele_num: usize,
+    ) -> Result<CsrRow, StorageError> {
         match self.data.get(&row_ptr) {
             Some(csrrow) => {
                 let cur_row_pos = csrrow.indptr[row_ptr];
@@ -228,13 +242,15 @@ impl StorageAPI for VectorStorage {
                     self.read_count += csrrow.size();
                     return Ok(CsrRow {
                         rowptr: csrrow.rowptr,
-                        data: csrrow.data[col_s..col_s+ele_num].to_vec(),
-                        indptr: csrrow.indptr[col_s..col_s+ele_num].to_vec(),
+                        data: csrrow.data[col_s..col_s + ele_num].to_vec(),
+                        indptr: csrrow.indptr[col_s..col_s + ele_num].to_vec(),
                     });
                 } else {
                     return Err(StorageError::ReadEmptyRowError(format!(
                         "Invalid col_pos: {}..{} in row {}",
-                        col_s, col_s + ele_num, csrrow.rowptr
+                        col_s,
+                        col_s + ele_num,
+                        csrrow.rowptr
                     )));
                 }
             }
@@ -262,7 +278,7 @@ impl StorageAPI for VectorStorage {
 
 impl VectorStorage {
     pub fn new() -> VectorStorage {
-        VectorStorage{
+        VectorStorage {
             data: HashMap::new(),
             read_count: 0,
             write_count: 0,
@@ -274,7 +290,7 @@ impl VectorStorage {
             Some(csrrow) => {
                 self.read_count += csrrow.size();
                 return Ok(csrrow.clone());
-            },
+            }
             None => {
                 return Err(StorageError::ReadOverBoundError(format!(
                     "Invalid rowptr: {}",
@@ -284,7 +300,6 @@ impl VectorStorage {
         }
     }
 }
-
 
 pub struct LRUCache<'a> {
     pub cache_size: usize,
@@ -306,7 +321,13 @@ pub struct LRUCache<'a> {
 }
 
 impl<'a> LRUCache<'a> {
-    pub fn new(cache_size: usize, word_byte: usize, output_base_addr: usize, b_mem: &'a mut CsrMatStorage, psum_mem: &'a mut VectorStorage) -> LRUCache<'a> {
+    pub fn new(
+        cache_size: usize,
+        word_byte: usize,
+        output_base_addr: usize,
+        b_mem: &'a mut CsrMatStorage,
+        psum_mem: &'a mut VectorStorage,
+    ) -> LRUCache<'a> {
         LRUCache {
             cache_size: cache_size,
             word_byte: word_byte,
@@ -365,7 +386,7 @@ impl<'a> LRUCache<'a> {
                 self.cur_num -= popped_csrrow.size();
                 self.psum_evict_count += popped_csrrow.size();
                 self.psum_occp -= popped_csrrow.size();
-                self.psum_mem.write(&mut vec![popped_csrrow,]).unwrap();
+                self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
                 let evict_size = self.rowmap.remove(&popid).unwrap().size();
                 self.cur_num -= evict_size;
@@ -374,7 +395,10 @@ impl<'a> LRUCache<'a> {
             }
         }
         if self.cur_num + space_required > self.capability {
-            return Err(format!("freeup_space: Not enough space for {}", space_required));
+            return Err(format!(
+                "freeup_space: Not enough space for {}",
+                space_required
+            ));
         } else {
             return Ok(());
         }
@@ -412,22 +436,29 @@ impl<'a> LRUCache<'a> {
         match self.freeup_row(rowid) {
             Ok(csrrow) => {
                 self.read_count += csrrow.size();
-                Some(csrrow)},
-            Err(_) => {if self.is_psum_row(rowid) { match self.psum_mem.read_row(rowid) {
-                Ok(csrrow) => {
-                    self.read_count += csrrow.size();
-                    self.miss_count += csrrow.size();
-                    Some(csrrow)
-                },
-                Err(_) => None,
-            }} else { match self.b_mem.read_row(rowid) {
-                Ok(csrrow) => {
-                    self.read_count += csrrow.size();
-                    self.miss_count += csrrow.size();
-                    Some(csrrow)
-                },
-                Err(_) => None,
-            }}}
+                Some(csrrow)
+            }
+            Err(_) => {
+                if self.is_psum_row(rowid) {
+                    match self.psum_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            self.read_count += csrrow.size();
+                            self.miss_count += csrrow.size();
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    match self.b_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            self.read_count += csrrow.size();
+                            self.miss_count += csrrow.size();
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                }
+            }
         }
     }
 
@@ -435,24 +466,31 @@ impl<'a> LRUCache<'a> {
         match self.read_cache(rowid) {
             Some(csrrow) => {
                 self.read_count += csrrow.size();
-                Some(csrrow)},
-            None => {if self.is_psum_row(rowid) { match self.psum_mem.read_row(rowid) {
-                    Ok(csrrow) => {
-                        self.read_count += csrrow.size();
-                        self.miss_count += csrrow.size();
-                        self.write(csrrow.clone());
-                        Some(csrrow)
-                    },
-                    Err(_) => None,
-                }} else { match self.b_mem.read_row(rowid) {
-                    Ok(csrrow) => {
-                        self.read_count += csrrow.size();
-                        self.miss_count += csrrow.size();
-                        self.write(csrrow.clone());
-                        Some(csrrow)
-                    },
-                    Err(_) => None,
-            }}}
+                Some(csrrow)
+            }
+            None => {
+                if self.is_psum_row(rowid) {
+                    match self.psum_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            self.read_count += csrrow.size();
+                            self.miss_count += csrrow.size();
+                            self.write(csrrow.clone());
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    match self.b_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            self.read_count += csrrow.size();
+                            self.miss_count += csrrow.size();
+                            self.write(csrrow.clone());
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                }
+            }
         }
     }
 
@@ -465,12 +503,11 @@ impl<'a> LRUCache<'a> {
             } else {
                 self.b_occp -= popped_csrrow.size();
             }
-            self.psum_mem.write(&mut vec![popped_csrrow,]).unwrap();
+            self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
         }
     }
 
     pub fn is_psum_row(&self, rowid: usize) -> bool {
         return rowid >= self.output_base_addr;
     }
-
 }

@@ -1,9 +1,9 @@
 use serde::Deserialize;
+use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::error::Error;
-use structopt::{StructOpt, clap::arg_enum};
+use structopt::{clap::arg_enum, StructOpt};
 
 #[derive(Debug, Deserialize)]
 pub struct OmegaConfig {

@@ -1,5 +1,5 @@
 use crate::pipeline_simu::Tickable;
-use crate::storage::{Element, CsrMatStorage, StorageAPI};
+use crate::storage::{CsrMatStorage, Element, StorageAPI};
 use std::cmp::{max, min};
 use std::collections::VecDeque;
 

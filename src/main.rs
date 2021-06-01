@@ -1,11 +1,11 @@
 mod components;
+mod frontend;
 mod gemm;
 mod pipeline_simu;
+mod preprocessing;
 mod py2rust;
 mod storage;
 mod storage_traffic_model;
-mod frontend;
-mod preprocessing;
 mod util;
 
 use std::cmp::min;
@@ -15,13 +15,12 @@ use storage::VectorStorage;
 use storage_traffic_model::TrafficModel;
 
 use crate::components::StreamBuffer;
+use crate::frontend::{parse_config, Accelerator, Cli, Simulator, WorkloadCate};
 use crate::pipeline_simu::PipelineSimulator;
+use crate::preprocessing::affinity_based_row_reordering;
 use crate::py2rust::load_pickled_gemms;
 use crate::storage::CsrMatStorage;
 use structopt::StructOpt;
-use crate::frontend::{parse_config, Cli, Simulator, Accelerator, WorkloadCate};
-use crate::preprocessing::affinity_based_row_reordering;
-
 
 // Workload included:
 // ss: ['2cubes_sphere', 'amazon0312', 'ca-CondMat', 'cage12', 'cit-Patents',
@@ -51,7 +50,10 @@ fn main() {
             let b_avg_row_len = gemm.b.nnz() / gemm.b.rows();
             println!("Get GEMM {}", gemm.name);
             println!("{}", &gemm);
-            println!("Avg row len of A: {}, Avg row len of B: {}", a_avg_row_len, b_avg_row_len);
+            println!(
+                "Avg row len of A: {}, Avg row len of B: {}",
+                a_avg_row_len, b_avg_row_len
+            );
 
             let validating_product_mat = (&gemm.a * &gemm.b).to_csr();
 
@@ -60,7 +62,12 @@ fn main() {
 
             // Preprocessing.
             if cli.preprocess {
-                if let Some(rowmap) = affinity_based_row_reordering(&mut dram_a, omega_config.cache_size, a_avg_row_len, b_avg_row_len) {
+                if let Some(rowmap) = affinity_based_row_reordering(
+                    &mut dram_a,
+                    omega_config.cache_size,
+                    a_avg_row_len,
+                    b_avg_row_len,
+                ) {
                     dram_a.reorder_row(rowmap);
                 }
             }
@@ -107,7 +114,10 @@ fn main() {
             println!("A matrix count: read {} write {}", a_count.0, a_count.1);
             println!("B matrix count: read {} write {}", b_count.0, b_count.1);
             println!("C matrix count: read {} write {}", c_count.0, c_count.1);
-            println!("Cache count: read {} write {}", cache_count.0, cache_count.1);
+            println!(
+                "Cache count: read {} write {}",
+                cache_count.0, cache_count.1
+            );
 
             println!("-----Output product matrix");
             for idx in 0..min(result.len(), 10) {
@@ -119,13 +129,16 @@ fn main() {
             let v_data = validating_product_mat.data().to_vec();
             let v_indices = validating_product_mat.indices().to_vec();
 
-            for idx in 0..min(v_indptr.len()-1, 10) {
-                let sliced_len = min(v_indptr[idx+1] - v_indptr[idx], 5);
-                let sliced_indptr = &v_indices[v_indptr[idx]..v_indptr[idx]+sliced_len];
-                let sliced_data = &v_data[v_indptr[idx]..v_indptr[idx]+sliced_len];
-                println!("rowptr: {} indptr: {:?} data: {:?}", &idx, sliced_indptr, sliced_data);
+            for idx in 0..min(v_indptr.len() - 1, 10) {
+                let sliced_len = min(v_indptr[idx + 1] - v_indptr[idx], 5);
+                let sliced_indptr = &v_indices[v_indptr[idx]..v_indptr[idx] + sliced_len];
+                let sliced_data = &v_data[v_indptr[idx]..v_indptr[idx] + sliced_len];
+                println!(
+                    "rowptr: {} indptr: {:?} data: {:?}",
+                    &idx, sliced_indptr, sliced_data
+                );
             }
-        },
+        }
 
         Simulator::AccurateSimu => {
             // Cycle-accurate simulator.
@@ -136,7 +149,6 @@ fn main() {
         }
     }
 }
-
 
 pub fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
