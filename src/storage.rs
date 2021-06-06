@@ -116,6 +116,7 @@ pub struct CsrMatStorage {
     pub write_count: usize,
     pub remapped: bool,
     pub row_remap: HashMap<usize, usize>,
+    pub track_count: bool,
 }
 
 impl StorageAPI for CsrMatStorage {
@@ -143,7 +144,7 @@ impl StorageAPI for CsrMatStorage {
                 data: self.data[s..t].to_vec(),
                 indptr: self.indices[s..t].to_vec(),
             };
-            self.read_count += csrrow.size();
+            if self.track_count { self.read_count += csrrow.size(); }
             return Ok(csrrow);
         } else {
             return Err(StorageError::ReadEmptyRowError(format!(
@@ -158,7 +159,7 @@ impl StorageAPI for CsrMatStorage {
         for row in rows.iter_mut() {
             let indptr = self.data.len();
             indptrs.push(indptr);
-            self.write_count += 2 * row.data.len() + 1;
+            if self.track_count { self.write_count += 2 * row.data.len() + 1; }
             self.data.extend(row.data.iter());
             self.indices.extend(row.indptr.iter());
             self.indptr.insert(self.indptr.len() - 1, indptr);
@@ -179,6 +180,7 @@ impl CsrMatStorage {
                 write_count: 0,
                 remapped: false,
                 row_remap: HashMap::new(),
+                track_count: true,
             },
             CsrMatStorage {
                 data: gemm.b.data().to_vec(),
@@ -188,6 +190,7 @@ impl CsrMatStorage {
                 write_count: 0,
                 remapped: false,
                 row_remap: HashMap::new(),
+                track_count: true,
             },
         )
     }
@@ -225,6 +228,7 @@ pub struct VectorStorage {
     pub data: HashMap<usize, CsrRow>,
     pub read_count: usize,
     pub write_count: usize,
+    pub track_count: bool,
 }
 
 impl StorageAPI for VectorStorage {
@@ -239,7 +243,7 @@ impl StorageAPI for VectorStorage {
                 let cur_row_pos = csrrow.indptr[row_ptr];
                 let end_row_pos = csrrow.indptr[row_ptr + 1];
                 if col_s + ele_num <= csrrow.data.len() {
-                    self.read_count += csrrow.size();
+                    if self.track_count { self.read_count += csrrow.size(); }
                     return Ok(CsrRow {
                         rowptr: csrrow.rowptr,
                         data: csrrow.data[col_s..col_s + ele_num].to_vec(),
@@ -269,7 +273,7 @@ impl StorageAPI for VectorStorage {
             let indptr = row.rowptr;
             indptrs.push(indptr);
             self.data.insert(indptr, row.clone());
-            self.write_count += row.size();
+            if self.track_count { self.write_count += row.size(); }
         }
 
         return Ok(indptrs);
@@ -282,13 +286,14 @@ impl VectorStorage {
             data: HashMap::new(),
             read_count: 0,
             write_count: 0,
+            track_count: true,
         }
     }
 
     pub fn read_row(&mut self, row_ptr: usize) -> Result<CsrRow, StorageError> {
         match self.data.get(&row_ptr) {
             Some(csrrow) => {
-                self.read_count += csrrow.size();
+                if self.track_count { self.read_count += csrrow.size(); }
                 return Ok(csrrow.clone());
             }
             None => {
@@ -318,6 +323,7 @@ pub struct LRUCache<'a> {
     pub psum_evict_count: usize,
     pub b_occp: usize,
     pub psum_occp: usize,
+    pub track_count: bool,
 }
 
 impl<'a> LRUCache<'a> {
@@ -345,6 +351,7 @@ impl<'a> LRUCache<'a> {
             psum_evict_count: 0,
             b_occp: 0,
             psum_occp: 0,
+            track_count: true,
         }
     }
 
@@ -359,7 +366,7 @@ impl<'a> LRUCache<'a> {
         if self.cur_num + num <= self.capability {
             self.cur_num += num;
             self.lru_queue.push_back(csrrow.rowptr);
-            self.write_count += csrrow.size();
+            if self.track_count { self.write_count += csrrow.size(); }
             self.rowmap.insert(csrrow.rowptr, csrrow);
         } else {
             if let Err(err) = self.freeup_space(num) {
@@ -367,7 +374,7 @@ impl<'a> LRUCache<'a> {
             }
             self.cur_num += num;
             self.lru_queue.push_back(csrrow.rowptr);
-            self.write_count += csrrow.size();
+            if self.track_count { self.write_count += csrrow.size(); }
             self.rowmap.insert(csrrow.rowptr, csrrow);
         }
     }
@@ -384,14 +391,14 @@ impl<'a> LRUCache<'a> {
             if self.is_psum_row(popid) {
                 let popped_csrrow = self.rowmap.remove(&popid).unwrap();
                 self.cur_num -= popped_csrrow.size();
-                self.psum_evict_count += popped_csrrow.size();
+                if self.track_count { self.psum_evict_count += popped_csrrow.size(); }
                 self.psum_occp -= popped_csrrow.size();
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
                 let evict_size = self.rowmap.remove(&popid).unwrap().size();
                 self.cur_num -= evict_size;
                 self.b_occp -= evict_size;
-                self.b_evict_count += evict_size;
+                if self.track_count { self.b_evict_count += evict_size; }
             }
         }
         if self.cur_num + space_required > self.capability {
@@ -425,7 +432,7 @@ impl<'a> LRUCache<'a> {
                 .remove(self.lru_queue.iter().position(|&x| x == rowid).unwrap());
             self.lru_queue.push_back(rowid);
             let csrrow = self.rowmap.get(&rowid).unwrap().clone();
-            self.read_count += csrrow.size();
+            if self.track_count { self.read_count += csrrow.size(); }
             return Some(csrrow);
         } else {
             return None;
@@ -442,8 +449,10 @@ impl<'a> LRUCache<'a> {
                 if self.is_psum_row(rowid) {
                     match self.psum_mem.read_row(rowid) {
                         Ok(csrrow) => {
-                            self.read_count += csrrow.size();
-                            self.miss_count += csrrow.size();
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
                             Some(csrrow)
                         }
                         Err(_) => None,
@@ -451,8 +460,10 @@ impl<'a> LRUCache<'a> {
                 } else {
                     match self.b_mem.read_row(rowid) {
                         Ok(csrrow) => {
-                            self.read_count += csrrow.size();
-                            self.miss_count += csrrow.size();
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
                             Some(csrrow)
                         }
                         Err(_) => None,
@@ -465,15 +476,17 @@ impl<'a> LRUCache<'a> {
     pub fn read(&mut self, rowid: usize) -> Option<CsrRow> {
         match self.read_cache(rowid) {
             Some(csrrow) => {
-                self.read_count += csrrow.size();
+                if self.track_count { self.read_count += csrrow.size(); }
                 Some(csrrow)
             }
             None => {
                 if self.is_psum_row(rowid) {
                     match self.psum_mem.read_row(rowid) {
                         Ok(csrrow) => {
-                            self.read_count += csrrow.size();
-                            self.miss_count += csrrow.size();
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
                             self.write(csrrow.clone());
                             Some(csrrow)
                         }
@@ -482,8 +495,10 @@ impl<'a> LRUCache<'a> {
                 } else {
                     match self.b_mem.read_row(rowid) {
                         Ok(csrrow) => {
-                            self.read_count += csrrow.size();
-                            self.miss_count += csrrow.size();
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
                             self.write(csrrow.clone());
                             Some(csrrow)
                         }

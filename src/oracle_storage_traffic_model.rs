@@ -186,8 +186,6 @@ pub struct TrafficModel<'a> {
     col_s: usize,
     merge_trackers: HashMap<usize, MergeTracker>,
     exec_round: usize,
-    /// Use each PE to do merge job in a round-robin way.
-    merge_pe: usize,
 }
 
 impl<'a> TrafficModel<'a> {
@@ -234,7 +232,6 @@ impl<'a> TrafficModel<'a> {
             col_s: 0,
             merge_trackers: HashMap::new(),
             exec_round: 0,
-            merge_pe: 0,
         }
     }
 
@@ -263,102 +260,151 @@ impl<'a> TrafficModel<'a> {
                 if !self.pes[i].merge_mode && (self.pes[i].reduction_window[0] == 0) {
                     continue;
                 }
-                // Fetch data from memory & cache.
-                let (rowidxs, scaling_factors, fibers) = self.fetch_window_data(i);
-                println!(
-                    "PE: {} scaling factors: {:?}",
-                    i,
-                    scaling_factors
-                        .iter()
-                        .map(|x| x.iter().map(|y| y.0).collect::<Vec<usize>>())
-                        .collect::<Vec<Vec<usize>>>()
-                );
 
-                // Compute the window.
-                let output_fibers = self.compute_a_window(&rowidxs, &scaling_factors, fibers);
-                println!(
-                    "Compute: rows: {:?} cols: {}-{} merge_mode: {} output fiber size: {:?}",
-                    &rowidxs,
-                    self.pes[i].col_s,
-                    self.pes[i].col_s + self.pes[i].reduction_window[0],
-                    &self.pes[i].merge_mode,
-                    output_fibers
-                        .iter()
-                        .map(|c| c.as_ref().map_or(0, |v| v.len()))
-                        .collect::<Vec<usize>>()
-                );
-                if !self.pes[i].merge_mode {
+                let oracle_exec = true;
+
+                if self.accelerator == Accelerator::Omega && oracle_exec {
+                    let (rowidxs, output_fibers, reduction_window) = self.oracle_window_exec(i);
                     println!(
-                        "Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}",
-                        self.exec_trackers[&self.pes[i].cur_block.get_idx()].touched_fiber_size,
-                        self.exec_trackers[&self.pes[i].cur_block.get_idx()].dedup_fiber_size,
-                        self.exec_trackers[&self.pes[i].cur_block.get_idx()].output_fiber_size
+                        "Oracle compute: PE: {} rows: {:?} cols: {}-{} merge_mode: {} output fiber size: {:?}",
+                        i,
+                        &rowidxs,
+                        self.pes[i].col_s,
+                        self.pes[i].col_s + self.pes[i].reduction_window[0],
+                        &self.pes[i].merge_mode,
+                        output_fibers
+                            .iter()
+                            .map(|c| c.as_ref().map_or(0, |v| v.len()))
+                            .collect::<Vec<usize>>()
                     );
-                }
 
-                // Update reuse tracker if it is not in the merge mode.
-                if !self.pes[i].merge_mode {
-                    self.exec_trackers
-                        .get_mut(&self.pes[i].cur_block.get_idx())
-                        .unwrap()
-                        .output_fiber_size += output_fibers
-                        .iter()
-                        .fold(0, |acc, x| acc + x.as_ref().map_or(0, |v| v.size()));
-                }
-
-                // Update work mode.
-                let pe = &self.pes[i];
-                if pe.merge_mode {
-                    for row in rowidxs.iter() {
-                        self.merge_queue.push(*row);
+                    if !self.pes[i].merge_mode {
+                        println!(
+                            "Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}",
+                            self.exec_trackers[&self.pes[i].cur_block.get_idx()].touched_fiber_size,
+                            self.exec_trackers[&self.pes[i].cur_block.get_idx()].dedup_fiber_size,
+                            self.exec_trackers[&self.pes[i].cur_block.get_idx()].output_fiber_size
+                        );
                     }
-                } else if !pe.merge_mode && pe.cur_block.height != 0 {
-                    // Finish one traverse over current rows.
-                    // Add the finished rows into merge queue and turn into merge mode.
-                    for (row_pos, row) in rowidxs.iter().enumerate() {
-                        // println!("row: {}", row);
 
-                        // // Merge scheme 1: 
-                        // if output_fibers[row_pos].is_some()
-                        //     && !self.is_window_valid(
-                        //         *row,
-                        //         1,
-                        //         pe.col_s + pe.reduction_window[0],
-                        //         pe.cur_block.col_s,
-                        //         pe.cur_block.width,
-                        //     )
-                        // {
-                        //     let tracker = self.merge_trackers.get_mut(row).unwrap();
-                        //     // Unregister current computed block from the merge tracker.
-                        //     tracker.blocks.retain(|x| *x != pe.cur_block.get_idx());
-                        //     // If all related blocks are computed, then start to merge all psums of
-                        //     // the row.
-                        //     if tracker.finished && tracker.blocks.len() == 0 {
-                        //         self.merge_queue.push(*row);
-                        //     }
-                        // }
+                    // Update reuse tracker if it is not in the merge mode.
+                    if !self.pes[i].merge_mode {
+                        self.exec_trackers
+                            .get_mut(&self.pes[i].cur_block.get_idx())
+                            .unwrap()
+                            .output_fiber_size += output_fibers
+                            .iter()
+                            .fold(0, |acc, x| acc + x.as_ref().map_or(0, |v| v.size()));
+                    }
 
-                        // Merge scheme 2:
-                        if output_fibers[row_pos].is_some()
-                            && !self.is_window_valid(
-                                *row,
-                                1,
-                                pe.col_s + pe.reduction_window[0],
-                                pe.cur_block.col_s,
-                                pe.cur_block.width,
-                            )
-                        {
-                            let tracker = self.merge_trackers.get_mut(row).unwrap();
-                            // Unregister current computed block from the merge tracker.
-                            tracker.blocks.retain(|x| *x != pe.cur_block.get_idx());
-                            // Every time a tile of a row is finished, start to merge the psums.
+                    // Update work mode.
+                    let pe = &self.pes[i];
+                    if pe.merge_mode {
+                        for row in rowidxs.iter() {
                             self.merge_queue.push(*row);
                         }
+                    } else if !pe.merge_mode && pe.cur_block.height != 0 {
+                        // Finish one traverse over current rows.
+                        // Add the finished rows into merge queue and turn into merge mode.
+                        for (row_pos, row) in rowidxs.iter().enumerate() {
+                            // println!("row: {}", row);
+                            if output_fibers[row_pos].is_some()
+                                && !self.is_window_valid(
+                                    *row,
+                                    1,
+                                    pe.col_s + pe.reduction_window[0],
+                                    pe.cur_block.col_s,
+                                    pe.cur_block.width,
+                                )
+                            {
+                                let tracker = self.merge_trackers.get_mut(row).unwrap();
+                                tracker.blocks.retain(|x| *x != pe.cur_block.get_idx());
+                                if tracker.finished && tracker.blocks.len() == 0 {
+                                    self.merge_queue.push(*row);
+                                }
+                            }
+                        }
                     }
+
+                    // Writeback psums.
+                    self.write_psum(rowidxs, output_fibers);
+                } else {
+                    // Fetch data from memory & cache.
+                    let (rowidxs, scaling_factors, fibers) = self.fetch_window_data(i);
+                    println!(
+                        "PE: {} scaling factors: {:?}",
+                        i,
+                        scaling_factors
+                            .iter()
+                            .map(|x| x.iter().map(|y| y.0).collect::<Vec<usize>>())
+                            .collect::<Vec<Vec<usize>>>()
+                    );
+
+                    // Compute the window.
+                    let output_fibers = self.compute_a_window(&rowidxs, &scaling_factors, fibers);
+                    println!(
+                        "Compute: rows: {:?} cols: {}-{} merge_mode: {} output fiber size: {:?}",
+                        &rowidxs,
+                        self.pes[i].col_s,
+                        self.pes[i].col_s + self.pes[i].reduction_window[0],
+                        &self.pes[i].merge_mode,
+                        output_fibers
+                            .iter()
+                            .map(|c| c.as_ref().map_or(0, |v| v.len()))
+                            .collect::<Vec<usize>>()
+                    );
+                    if !self.pes[i].merge_mode {
+                        println!(
+                            "Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}",
+                            self.exec_trackers[&self.pes[i].cur_block.get_idx()].touched_fiber_size,
+                            self.exec_trackers[&self.pes[i].cur_block.get_idx()].dedup_fiber_size,
+                            self.exec_trackers[&self.pes[i].cur_block.get_idx()].output_fiber_size
+                        );
+                    }
+
+                    // Update reuse tracker if it is not in the merge mode.
+                    if !self.pes[i].merge_mode {
+                        self.exec_trackers
+                            .get_mut(&self.pes[i].cur_block.get_idx())
+                            .unwrap()
+                            .output_fiber_size += output_fibers
+                            .iter()
+                            .fold(0, |acc, x| acc + x.as_ref().map_or(0, |v| v.size()));
+                    }
+
+                    // Update work mode.
+                    let pe = &self.pes[i];
+                    if pe.merge_mode {
+                        for row in rowidxs.iter() {
+                            self.merge_queue.push(*row);
+                        }
+                    } else if !pe.merge_mode && pe.cur_block.height != 0 {
+                        // Finish one traverse over current rows.
+                        // Add the finished rows into merge queue and turn into merge mode.
+                        for (row_pos, row) in rowidxs.iter().enumerate() {
+                            // println!("row: {}", row);
+                            if output_fibers[row_pos].is_some()
+                                && !self.is_window_valid(
+                                    *row,
+                                    1,
+                                    pe.col_s + pe.reduction_window[0],
+                                    pe.cur_block.col_s,
+                                    pe.cur_block.width,
+                                )
+                            {
+                                let tracker = self.merge_trackers.get_mut(row).unwrap();
+                                tracker.blocks.retain(|x| *x != pe.cur_block.get_idx());
+                                if tracker.finished && tracker.blocks.len() == 0 {
+                                    self.merge_queue.push(*row);
+                                }
+                            }
+                        }
+                    }
+
+                    // Writeback psums.
+                    self.write_psum(rowidxs, output_fibers);
                 }
 
-                // Writeback psums.
-                self.write_psum(rowidxs, output_fibers);
             }
 
             println!("Cache occp: {} in {}, miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}",
@@ -395,11 +441,8 @@ impl<'a> TrafficModel<'a> {
         self.merge_queue.sort();
         self.merge_queue.dedup();
         while i != self.merge_queue.len() {
-            let rowid = self.merge_queue[i];
-            let psum_addrs = self.output_trackers.get(&rowid).unwrap();
-            if psum_addrs.len() == 1
-                && self.merge_trackers[&rowid].finished
-                && self.merge_trackers[&rowid].blocks.len() == 0 {
+            let psum_addrs = self.output_trackers.get(&self.merge_queue[i]).unwrap();
+            if psum_addrs.len() == 1 {
                 println!(
                     "Assign jobs: swapout addr {} of {}",
                     psum_addrs[0], self.merge_queue[i]
@@ -420,18 +463,17 @@ impl<'a> TrafficModel<'a> {
         }
 
         // Calculate the required merge psums number.
-        let merge_pe_num = (psums_num + self.lane_num - 1) / self.lane_num;
-        let mut alloc_merge_pe = min(merge_pe_num, self.pe_num);
+        let mut merge_pe_num = (psums_num + self.lane_num - 1) / self.lane_num;
+
         // Assign jobs to PEs.
-        for offset in 0..self.pe_num {
+        for pe_no in 0..self.pe_num {
             // Allocate PEs to merge the unmerged psums in prior.
-            let pe_no = (offset + self.merge_pe) % self.pe_num;
-            if alloc_merge_pe > 0 {
-                println!("PE {} turn into merge mode.", pe_no);
+            println!("PE no: {}", pe_no);
+            if merge_pe_num > 0 {
                 self.pes[pe_no].merge_mode = true;
-                alloc_merge_pe -= 1;
+                merge_pe_num -= 1;
             } else {
-                println!("PE {}", pe_no);
+                println!("No merge to do.");
                 println!(
                     "Current reduction window: {:?}",
                     self.pes[pe_no].reduction_window
@@ -445,7 +487,8 @@ impl<'a> TrafficModel<'a> {
                         Some(block) => {
                             println!("Assign block {:?} to {}", block.get_idx(), pe_no);
                             let reduction_window =
-                                self.adjust_window(block.get_idx(), block.get_shape());
+                                // self.adjust_window(block.get_idx(), block.get_shape());
+                                self.oracle_adjust_window(block.get_idx(), block.get_shape());
                             self.pes[pe_no].assign_block(block);
                             self.pes[pe_no].reduction_window = reduction_window;
                             println!(
@@ -479,8 +522,6 @@ impl<'a> TrafficModel<'a> {
                 }
             }
         }
-
-        // self.merge_pe = (self.merge_pe + merge_pe_num) % self.pe_num;
 
         return true;
     }
@@ -517,10 +558,7 @@ impl<'a> TrafficModel<'a> {
                             .merge_trackers
                             .entry(rowid)
                             .or_insert(MergeTracker::new());
-                        // Register the block in the merge tracker.
                         tracker.blocks.push(block.get_idx());
-                        // If the allocated block is the final block to be executed, then
-                        // mark the row to be finished.
                         tracker.finished = row_finished;
                     }
                 }
@@ -634,7 +672,7 @@ impl<'a> TrafficModel<'a> {
         ) {}
 
         println!(
-            "PE {} shift to row_s {} col_s {}, block: row_s {} col_s {} height {} width {}",
+            "{} shift to row_s {} col_s {}, block: row_s {} col_s {} height {} width {}",
             pe_no,
             self.pes[pe_no].row_s,
             self.pes[pe_no].col_s,
@@ -896,5 +934,48 @@ impl<'a> TrafficModel<'a> {
 
     pub fn get_cache_stat(&self) -> (usize, usize) {
         (self.fiber_cache.read_count, self.fiber_cache.write_count)
+    }
+
+    pub fn oracle_adjust_window(&mut self, pe_no: usize) -> [usize; 2] {
+        // Disable execution track since we speculatively try execution to find optimal window shape.
+        self.set_mem_track(false);
+
+        // Initialize the metrics.
+        let mut opt_access_count = usize::MAX;
+        let mut opt_reduction_window = [0, 0];
+        let mut reduction_window = [self.lane_num, 1];
+        let pe = &self.pes[pe_no];
+
+        // Iterate through all possible window shape.
+        while reduction_window[0] >= 1 {
+            // Try execute current block with current window.
+
+            let a_read, b_read, c_rw = self.try_exec_window(pe_no, reduction_window);
+            let access_sum = a_read + b_read + c_rw.iter().sum();
+            if access_sum <= opt_access_count {
+                opt_access_count = access_sum;
+                opt_reduction_window = reduction_window.clone();
+            }
+        }
+
+        // Finish the speculative execution. Turn the execution track on.
+        self.set_mem_track(true);
+
+        unimplemented!()
+    }
+
+    fn try_exec_window(&self, pe_no: usize, reduction_window: [usize; 2]) -> (usize, usize, [usize; 2]) {
+        // Return A read, B read, C read & write.
+        let mut a_read = 0;
+        let mut b_read = 0;
+        let mut c_rw = [0, 0];
+
+    }
+
+    fn set_mem_track(&mut self, if_track: bool) {
+        self.a_mem.track_count = if_track;
+        self.fiber_cache.track_count = if_track;
+        self.fiber_cache.b_mem.track_count = if_track;
+        self.fiber_cache.psum_mem.track_count = if_track;
     }
 }

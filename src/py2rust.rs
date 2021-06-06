@@ -17,14 +17,14 @@ def retrieve_pickled_csr(pickle_gemm_fp, pickle_gemm_name):
             A = A.tocsr()
         elif isinstance(A, (np.ndarray)):
             A = csr_matrix(A)
-        else:
+        elif not isinstance(A, csr_matrix):
             raise TypeError('Unsupported matrix type: {}'.format(type(A)))
 
         if isinstance(B, (csc_matrix, coo_matrix)):
             B = B.tocsr()
         elif isinstance(B, (np.ndarray)):
             B = csr_matrix(B)
-        else:
+        elif not isinstance(B, csr_matrix):
             raise TypeError('Unsupported matrix type: {}'.format(type(B)))
 
         shape_A, shape_B = A.shape, B.shape
@@ -34,6 +34,7 @@ def retrieve_pickled_csr(pickle_gemm_fp, pickle_gemm_name):
 
         print(f'% -- A --')
         print(f'% shape: {shape_A} data: {data_A[:5]}... indices: {indices_A[:5]}... indptr: {indptr_A[:5]}...')
+        print(f'% -- B --')
         print(f'% shape: {shape_B} data: {data_B[:5]}... indices: {indices_B[:5]}... indptr: {indptr_B[:5]}...')
     print('--- Return from Python Interface ---\n')
     return (shape_A, indptr_A, indices_A, data_A, shape_B, indptr_B, indices_B, data_B)

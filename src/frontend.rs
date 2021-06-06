@@ -9,10 +9,12 @@ use structopt::{clap::arg_enum, StructOpt};
 pub struct OmegaConfig {
     pub ss_filepath: String,
     pub nn_filepath: String,
+    pub desired_filepath: String,
     pub pe_num: usize,
     pub lane_num: usize,
     pub cache_size: usize,
     pub word_byte: usize,
+    pub block_shape: [usize; 2],
 }
 
 arg_enum! {
@@ -37,6 +39,7 @@ arg_enum! {
     pub enum WorkloadCate {
         SS,
         NN,
+        Desired,
     }
 }
 

@@ -17,17 +17,19 @@ nn=('alexnetconv0' 'alexnetconv1' 'alexnetconv2' 'alexnetconv3' 'alexnetconv4'
 #         nohup ./target/debug/omega-sim trafficmodel $0 $1 i >
 
 cur_date=$(date +'%m_%d_%H')
-echo "Execute use $1 on $2"
+echo "----Execute use $1 on $2----"
+echo "Write output to $3"
+mkdir -p $3
 if [[ "$2" == "ss" ]]; then
-    for i in "${ss[@]:0:1}"; do
+    for i in "${ss[@]:0:10}"; do
         echo "* start $i"
-        nohup ./target/debug/omega-sim trafficmodel $1 $2 $i > ${1}_${i}_${cur_date}.log &
+        nohup ./target/debug/omega-sim trafficmodel $1 $2 $i > ${3}/${1}_${i}_${cur_date}.log &
         sleep 2
     done
 elif [[ "$2" == "nn" ]]; then
     for i in "${nn[@]:0:1}"; do
         echo "* start $i"
-        nohup ./target/debug/omega-sim trafficmodel $1 $2 $i > ${1}_${i}_${cur_date}.log &
+        nohup ./target/debug/omega-sim trafficmodel $1 $2 $i > ${3}/${1}_${i}_${cur_date}.log &
         sleep 2
     done
 else

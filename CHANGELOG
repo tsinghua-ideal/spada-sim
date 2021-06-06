@@ -34,3 +34,19 @@
 1. TODO: Shrink the cache size to see if the swapout case appears.
 2. TODO: Sample the reduction window shape to test the oracle reduction window performance.
 3. TODO: Test the different block scheme (block shape, size).
+
+--2021.06.03--
+1. Finish 06.01.1.
+2. TODO: Check whether the B access count is correct.
+3. TODO: Oracle execution should be in the unit of block.
+4. TODO: Construct an example which is suitable for omega execution.
+
+--2021.06.05--
+1. Finish 06.03.4.
+2. Summerize recent tasks:
+    a. Execute a block with all possible reduction window shapes to find the optimal shape.
+    b. Test the different block scheme (block shape, size).
+    c. Check whether the B access count is correct.
+
+--2021.06.06--
+1. Consider change column block from relative position to absolute index.

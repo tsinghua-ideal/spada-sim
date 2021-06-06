@@ -7,6 +7,7 @@ mod py2rust;
 mod storage;
 mod storage_traffic_model;
 mod util;
+// mod oracle_storage_traffic_model;
 
 use std::cmp::min;
 
@@ -36,7 +37,8 @@ use structopt::StructOpt;
 // 'resnet50layer4_conv1', 'resnet50layer4_conv2', 'resnet50layer4_conv3', 'resnet50fc']
 
 fn main() {
-    let omega_config = parse_config("omega_config.json").unwrap();
+    // let omega_config = parse_config("omega_config_3mb.json").unwrap();
+    let omega_config = parse_config("omega_config_1mb.json").unwrap();
     let cli: Cli = Cli::from_args();
 
     match cli.simulator {
@@ -44,6 +46,7 @@ fn main() {
             let gemm_fp = match cli.category {
                 WorkloadCate::NN => omega_config.nn_filepath,
                 WorkloadCate::SS => omega_config.ss_filepath,
+                WorkloadCate::Desired => omega_config.desired_filepath,
             };
             let gemm = load_pickled_gemms(&gemm_fp, &cli.workload).unwrap();
             let a_avg_row_len = gemm.a.nnz() / gemm.a.rows();
@@ -81,7 +84,7 @@ fn main() {
 
             let default_block_shape = match cli.accelerator {
                 Accelerator::Ip => [omega_config.lane_num, 1],
-                Accelerator::Omega => [omega_config.lane_num, omega_config.lane_num],
+                Accelerator::Omega => [omega_config.block_shape[0], omega_config.block_shape[1]],
                 Accelerator::Op => [1, usize::MAX],
             };
 
