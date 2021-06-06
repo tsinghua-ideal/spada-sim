@@ -49,4 +49,8 @@
     c. Check whether the B access count is correct.
 
 --2021.06.06--
-1. Consider change column block from relative position to absolute index.
+1. Oracle reduction window:
+    a. When assign a new block, based on current condition, try execute with different shapes, then
+    pick the one with least incurred memory read/write.
+    b. Each storage component should support a mirroring mechanism to help oracle execution trials.
+2. TODO: Consider change column block from relative position to absolute index.

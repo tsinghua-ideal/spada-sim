@@ -397,15 +397,29 @@ impl<'a> TrafficModel<'a> {
         while i != self.merge_queue.len() {
             let rowid = self.merge_queue[i];
             let psum_addrs = self.output_trackers.get(&rowid).unwrap();
-            if psum_addrs.len() == 1
-                && self.merge_trackers[&rowid].finished
+            // if psum_addrs.len() == 1
+            //     && self.merge_trackers[&rowid].finished
+            //     && self.merge_trackers[&rowid].blocks.len() == 0 {
+            //     println!(
+            //         "Assign jobs: swapout addr {} of {}",
+            //         psum_addrs[0], self.merge_queue[i]
+            //     );
+            //     self.merge_queue.remove(i);
+            //     self.fiber_cache.swapout(psum_addrs[0]);
+            // } else {
+            //     i += 1;
+            //     psums_num += psum_addrs.len();
+            // }
+            if psum_addrs.len() == 1 {
+                if self.merge_trackers[&rowid].finished
                 && self.merge_trackers[&rowid].blocks.len() == 0 {
-                println!(
-                    "Assign jobs: swapout addr {} of {}",
-                    psum_addrs[0], self.merge_queue[i]
-                );
+                    println!(
+                        "Assign jobs: swapout addr {} of {}",
+                        psum_addrs[0], self.merge_queue[i]
+                    );
+                    self.fiber_cache.swapout(psum_addrs[0]);
+                }
                 self.merge_queue.remove(i);
-                self.fiber_cache.swapout(psum_addrs[0]);
             } else {
                 i += 1;
                 psums_num += psum_addrs.len();
@@ -480,7 +494,7 @@ impl<'a> TrafficModel<'a> {
             }
         }
 
-        // self.merge_pe = (self.merge_pe + merge_pe_num) % self.pe_num;
+        self.merge_pe = (self.merge_pe + merge_pe_num) % self.pe_num;
 
         return true;
     }
