@@ -54,3 +54,8 @@
     pick the one with least incurred memory read/write.
     b. Each storage component should support a mirroring mechanism to help oracle execution trials.
 2. TODO: Consider change column block from relative position to absolute index.
+
+--2021.06.07--
+1. Fix 06.05.2.a
+2. Fix 06.05.2.b
+3. TODO: Compare all ss matrices.

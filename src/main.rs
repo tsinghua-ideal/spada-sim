@@ -7,7 +7,7 @@ mod py2rust;
 mod storage;
 mod storage_traffic_model;
 mod util;
-// mod oracle_storage_traffic_model;
+mod oracle_storage_traffic_model;
 
 use std::cmp::min;
 
@@ -91,37 +91,37 @@ fn main() {
             // Oracle execution: to use the optimal reduction window shape.
             let oracle_exec = true;
 
-            let mut traffic_model = storage_traffic_model::TrafficModel::new(
-                omega_config.pe_num,
-                omega_config.lane_num,
-                omega_config.cache_size,
-                omega_config.word_byte,
-                output_base_addr,
-                default_reduction_window,
-                default_block_shape,
-                &mut dram_a,
-                &mut dram_b,
-                &mut dram_psum,
-                cli.accelerator.clone(),
-            );
-
-            // let mut traffic_model = oracle_storage_traffic_model::TrafficModel::new(
-            //         omega_config.pe_num,
-            //         omega_config.lane_num,
-            //         omega_config.cache_size,
-            //         omega_config.word_byte,
-            //         output_base_addr,
-            //         default_reduction_window,
-            //         default_block_shape,
-            //         &mut dram_a,
-            //         &mut dram_b,
-            //         &mut dram_psum,
-            //         cli.accelerator.clone(),
-            //         oracle_exec,
+            // let mut traffic_model = storage_traffic_model::TrafficModel::new(
+            //     omega_config.pe_num,
+            //     omega_config.lane_num,
+            //     omega_config.cache_size,
+            //     omega_config.word_byte,
+            //     output_base_addr,
+            //     default_reduction_window,
+            //     default_block_shape,
+            //     &mut dram_a,
+            //     &mut dram_b,
+            //     &mut dram_psum,
+            //     cli.accelerator.clone(),
             // );
 
+            let mut traffic_model = oracle_storage_traffic_model::TrafficModel::new(
+                    omega_config.pe_num,
+                    omega_config.lane_num,
+                    omega_config.cache_size,
+                    omega_config.word_byte,
+                    output_base_addr,
+                    default_reduction_window,
+                    default_block_shape,
+                    &mut dram_a,
+                    &mut dram_b,
+                    &mut dram_psum,
+                    cli.accelerator.clone(),
+                    oracle_exec,
+            );
+
             traffic_model.execute();
-            
+
             let result = traffic_model.get_exec_result();
             let a_count = traffic_model.get_a_mat_stat();
             let b_count = traffic_model.get_b_mat_stat();

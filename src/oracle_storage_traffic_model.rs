@@ -11,7 +11,7 @@ use storage::{LRUCache, VectorStorage};
 use crate::frontend::Accelerator;
 use crate::{
     print_type_of,
-    storage::{self, CsrMatStorage, CsrRow, StorageAPI, StorageError},
+    storage::{self, CsrMatStorage, CsrRow, StorageAPI, StorageError, Snapshotable},
 };
 
 #[derive(Debug, Clone)]
@@ -655,15 +655,6 @@ impl<'a> TrafficModel<'a> {
             }
         }
 
-        // Check if the current window is at the tail.
-        if !self.is_window_valid(
-            self.pes[pe_no].row_s,
-            self.pes[pe_no].reduction_window[1],
-            self.pes[pe_no].col_s + self.pes[pe_no].reduction_window[0],
-            self.pes[pe_no].cur_block.col_s,
-            self.pes[pe_no].cur_block.width,
-        ) {}
-
         println!(
             "PE {} shift to row_s {} col_s {}, block: row_s {} col_s {} height {} width {}",
             pe_no,
@@ -929,15 +920,15 @@ impl<'a> TrafficModel<'a> {
         (self.fiber_cache.read_count, self.fiber_cache.write_count)
     }
 
-    pub fn oracle_adjust_window(&mut self, block: &Block) -> [usize; 2] {
+    fn oracle_adjust_window(&mut self, block: &Block) -> [usize; 2] {
         // Initialize the metrics.
         let mut opt_access_count = usize::MAX;
         let mut opt_reduction_window = [0, 0];
         let mut reduction_window = [self.lane_num, 1];
-        let pe = &self.pes[pe_no];
 
         // Iterate through all possible window shape.
         while reduction_window[0] >= 1 {
+            println!("Reduction window: {:?}", &reduction_window);
             // Restore from snapshot.
             self.a_mem.restore_from_snapshot();
             self.fiber_cache.restore_from_snapshot();
@@ -954,20 +945,154 @@ impl<'a> TrafficModel<'a> {
             let psum_mem_read_count = self.fiber_cache.psum_mem.read_count;
             let psum_mem_write_count = self.fiber_cache.psum_mem.write_count;
 
-            let access_count = b_mem_read_count - prev_b_mem_read_count
-                + psum_mem_read_count - prev_psum_mem_read_count
-                + psum_mem_write_count - prev_psum_mem_write_count;
+            let b_read_diff = b_mem_read_count - prev_b_mem_read_count;
+            let psum_read_diff = psum_mem_read_count - prev_psum_mem_read_count;
+            let psum_write_diff = psum_mem_write_count - prev_psum_mem_write_count;
+
+            let access_count = b_read_diff + psum_read_diff + psum_write_diff;
+
+            println!("Block: {:?} total_diff: {} b_read_diff: {} psum_read_diff: {} psum_write_diff: {}",
+                block.get_idx(), access_count, b_read_diff, psum_read_diff, psum_write_diff);
 
             if access_count < opt_access_count {
                 opt_access_count = access_count;
                 opt_reduction_window = reduction_window.clone();
             }
+
+            reduction_window[0] /= 2;
+            reduction_window[1] *= 2;
         }
 
         opt_reduction_window
     }
 
-    fn try_exec_block(block: &Block, reduction_window: &[usize; 2]) {
-        unimplemented!()
+    fn try_exec_block(&mut self, block: &Block, reduction_window: &[usize; 2]) {
+        let mut row_s = 0;
+        let mut col_s = 0;
+
+        // Iterate through all window position.
+        loop {
+            // If the row_s exceeds the block limitation.
+            if row_s >= block.row_s + block.height {
+                break;
+            }
+
+            // Try to allocate along K dim.
+            if self.is_window_valid(
+                row_s,
+                reduction_window[1],
+                col_s + reduction_window[0],
+                col_s,
+                block.width
+            ) {
+                col_s += reduction_window[0];
+            } else {
+                col_s = block.col_s;
+                row_s += reduction_window[1];
+                if row_s >= block.row_s + block.height {
+                    break;
+                }
+                while !self.is_window_valid(
+                    row_s,
+                    reduction_window[1],
+                    col_s,
+                    block.col_s,
+                    block.width) {
+                    row_s += reduction_window[1];
+                    if row_s >= block.row_s + block.height {
+                        break;
+                    }
+                }
+            }
+
+            println!(
+                "Try exec: shift to row_s {} col_s {}, block: row_s {} col_s {} height {} width {}",
+                row_s,
+                col_s,
+                block.row_s,
+                block.col_s,
+                block.height,
+                block.width
+            );
+
+            // Fetch data.
+            let mut scaling_factors = vec![];
+            let mut fibers = vec![];
+            let mut rowidxs = vec![];
+
+            rowidxs = (row_s..min(row_s + reduction_window[1], self.a_mem.get_row_len()))
+                .filter(|x| {
+                    self.a_mem.get_rowptr(*x + 1) as i32 - self.a_mem.get_rowptr(*x) as i32 >= 0
+                })
+                .collect();
+            let mut broadcast_cache: HashMap<usize, CsrRow> = HashMap::new();
+            for rowidx in rowidxs.iter() {
+                let mut r_sfs = CsrRow::new(*rowidx);
+                if self.a_mem.get_rowptr(*rowidx + 1) > self.a_mem.get_rowptr(*rowidx) + col_s {
+                    let ele_num = min(
+                        reduction_window[0],
+                        self.a_mem.get_rowptr(*rowidx + 1)
+                            - self.a_mem.get_rowptr(*rowidx)
+                            - col_s,
+                    );
+                    r_sfs = self.a_mem.read(*rowidx, col_s, ele_num).unwrap();
+                }
+                let mut fbs = vec![];
+                let mut sfs = vec![];
+                for (colid, value) in r_sfs.enumerate() {
+                    if broadcast_cache.contains_key(colid) {
+                        let csrrow = broadcast_cache[colid].clone();
+                        fbs.push(csrrow);
+                        sfs.push((*colid, *value));
+                    } else {
+                        match self.fiber_cache.read(*colid) {
+                            Some(csrrow) => {
+                                broadcast_cache.insert(*colid, csrrow.clone());
+                                fbs.push(csrrow);
+                                sfs.push((*colid, *value));
+                            }
+                            None => (),
+                        }
+                    }
+                }
+                scaling_factors.push(sfs);
+                fibers.push(fbs);
+            }
+
+            // Compute data.
+            let mut psums = vec![];
+            for (rowidx, sfs, fbs) in izip!(&rowidxs, &scaling_factors, fibers) {
+                // Compute psum.
+                if sfs.len() == 0 {
+                    psums.push(None);
+                    continue;
+                }
+                let mut psum = CsrRow::new(*rowidx);
+                for (sf, fb) in izip!(sfs, fbs) {
+                    for (colid, value) in izip!(fb.indptr, fb.data) {
+                        match psum.indptr.binary_search(&colid) {
+                            Ok(pos) => psum.data[pos] += sf.1 * value,
+                            Err(pos) => {
+                                psum.data.insert(pos, sf.1 * value);
+                                psum.indptr.insert(pos, colid);
+                            }
+                        }
+                    }
+                }
+                psums.push(Some(psum));
+            }
+
+            // Write back.
+            for (rowidx, output_fiber) in rowidxs
+                .into_iter()
+                .zip(psums.into_iter())
+                .filter(|(_, y)| y.is_some())
+            {
+                let mut output_fiber = output_fiber.unwrap();
+                output_fiber.rowptr = self.output_base_addr;
+                self.output_base_addr += 1;
+                self.fiber_cache.write(output_fiber);
+            }
+        }
     }
 }

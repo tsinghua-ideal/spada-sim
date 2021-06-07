@@ -638,15 +638,6 @@ impl<'a> TrafficModel<'a> {
             }
         }
 
-        // Check if the current window is at the tail.
-        if !self.is_window_valid(
-            self.pes[pe_no].row_s,
-            self.pes[pe_no].reduction_window[1],
-            self.pes[pe_no].col_s + self.pes[pe_no].reduction_window[0],
-            self.pes[pe_no].cur_block.col_s,
-            self.pes[pe_no].cur_block.width,
-        ) {}
-
         println!(
             "PE {} shift to row_s {} col_s {}, block: row_s {} col_s {} height {} width {}",
             pe_no,

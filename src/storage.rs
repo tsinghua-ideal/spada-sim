@@ -1,12 +1,6 @@
 use fmt::write;
-use itertools::izip;
-use std::{
-    cmp::{max, min},
-    collections::{HashMap, VecDeque},
-    fmt,
-    hash::Hash,
-    ops::Index,
-};
+use itertools::{Itertools, izip};
+use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, fmt, hash::Hash, ops::Index, usize};
 
 use crate::gemm::GEMM;
 
@@ -108,6 +102,12 @@ pub trait StorageAPI {
     fn write(&mut self, rows: &mut Vec<CsrRow>) -> Result<Vec<usize>, StorageError>;
 }
 
+pub trait Snapshotable {
+    fn take_snapshot(&mut self);
+    fn drop_snapshot(&mut self);
+    fn restore_from_snapshot(&mut self);
+}
+
 pub struct CsrMatStorage {
     pub data: Vec<f64>,
     pub indptr: Vec<usize>,
@@ -117,6 +117,7 @@ pub struct CsrMatStorage {
     pub remapped: bool,
     pub row_remap: HashMap<usize, usize>,
     pub track_count: bool,
+    snapshot: Option<(usize, usize)>
 }
 
 impl StorageAPI for CsrMatStorage {
@@ -169,6 +170,30 @@ impl StorageAPI for CsrMatStorage {
     }
 }
 
+impl Snapshotable for CsrMatStorage {
+    fn take_snapshot(&mut self) {
+        // Since currently the A & B matrices are read-only, we can simply dump the count_metrics.
+        self.snapshot = Some((self.read_count, self.write_count));
+    }
+
+    fn drop_snapshot(&mut self) {
+        // To drop the snapshot we simply turn it into None.
+        self.snapshot = None;
+    }
+
+    fn restore_from_snapshot(&mut self) {
+        match self.snapshot {
+            Some(ref snp) => {
+                self.read_count = snp.0;
+                self.write_count = snp.1;
+            },
+            None => {
+                panic!("No snapshot to be restored!");
+            }
+        }
+    }
+}
+
 impl CsrMatStorage {
     pub fn init_with_gemm(gemm: GEMM) -> (CsrMatStorage, CsrMatStorage) {
         (
@@ -181,6 +206,7 @@ impl CsrMatStorage {
                 remapped: false,
                 row_remap: HashMap::new(),
                 track_count: true,
+                snapshot: None,
             },
             CsrMatStorage {
                 data: gemm.b.data().to_vec(),
@@ -191,6 +217,7 @@ impl CsrMatStorage {
                 remapped: false,
                 row_remap: HashMap::new(),
                 track_count: true,
+                snapshot: None,
             },
         )
     }
@@ -229,6 +256,7 @@ pub struct VectorStorage {
     pub read_count: usize,
     pub write_count: usize,
     pub track_count: bool,
+    snapshot: Option<(Vec<usize>, usize, usize)>
 }
 
 impl StorageAPI for VectorStorage {
@@ -280,6 +308,35 @@ impl StorageAPI for VectorStorage {
     }
 }
 
+impl Snapshotable for VectorStorage {
+    fn take_snapshot(&mut self) {
+        // Since C matrix may be written, we need to track the item added to the Hashmap.
+        self.snapshot = Some((
+            self.data.keys().map(|x| *x).collect_vec(),
+            self.read_count,
+            self.write_count,
+        ));
+    }
+
+    fn drop_snapshot(&mut self) {
+        // To drop the snapshot we simply turn it into None.
+        self.snapshot = None;
+    }
+
+    fn restore_from_snapshot(&mut self) {
+        match self.snapshot {
+            Some(ref snp) => {
+                self.data.retain(|k, _| snp.0.contains(k));
+                self.read_count = snp.1;
+                self.write_count = snp.2;
+            }
+            None => {
+                panic!("No snapshot to be restored!");
+            }
+        }
+    }
+}
+
 impl VectorStorage {
     pub fn new() -> VectorStorage {
         VectorStorage {
@@ -287,6 +344,7 @@ impl VectorStorage {
             read_count: 0,
             write_count: 0,
             track_count: true,
+            snapshot: None,
         }
     }
 
@@ -324,6 +382,57 @@ pub struct LRUCache<'a> {
     pub b_occp: usize,
     pub psum_occp: usize,
     pub track_count: bool,
+    snapshot: Option<CacheSnapshot>,
+}
+
+impl<'a> Snapshotable for LRUCache<'a> {
+    fn take_snapshot(&mut self) {
+        // First dump cache's info, then each mem dump its own info.
+        self.snapshot = Some(CacheSnapshot {
+            cur_num: self.cur_num,
+            read_count: self.read_count,
+            write_count: self.write_count,
+            rowmap: self.rowmap.clone(),
+            lru_queue: self.lru_queue.clone(),
+            output_base_addr: self.output_base_addr,
+            miss_count: self.miss_count,
+            b_evict_count: self.b_evict_count,
+            psum_evict_count: self.psum_evict_count,
+            b_occp: self.b_occp,
+            psum_occp: self.psum_occp,
+        });
+        self.b_mem.take_snapshot();
+        self.psum_mem.take_snapshot();
+    }
+
+    fn drop_snapshot(&mut self) {
+        self.snapshot = None;
+        self.b_mem.drop_snapshot();
+        self.psum_mem.drop_snapshot();
+    }
+
+    fn restore_from_snapshot(&mut self) {
+        match self.snapshot {
+            Some(ref snp) => {
+                self.cur_num = snp.cur_num;
+                self.read_count = snp.read_count;
+                self.write_count = snp.write_count;
+                self.rowmap = snp.rowmap.clone();
+                self.lru_queue = snp.lru_queue.clone();
+                self.output_base_addr = snp.output_base_addr;
+                self.miss_count = snp.miss_count;
+                self.b_evict_count = snp.b_evict_count;
+                self.psum_evict_count = snp.psum_evict_count;
+                self.b_occp = snp.b_occp;
+                self.psum_occp = snp.psum_occp;
+            },
+            None => {
+                panic!("No snapshot to be restored!");
+            }
+        }
+        self.b_mem.restore_from_snapshot();
+        self.psum_mem.restore_from_snapshot();
+    }
 }
 
 impl<'a> LRUCache<'a> {
@@ -352,6 +461,7 @@ impl<'a> LRUCache<'a> {
             b_occp: 0,
             psum_occp: 0,
             track_count: true,
+            snapshot: None,
         }
     }
 
@@ -525,4 +635,18 @@ impl<'a> LRUCache<'a> {
     pub fn is_psum_row(&self, rowid: usize) -> bool {
         return rowid >= self.output_base_addr;
     }
+}
+
+struct CacheSnapshot {
+    pub cur_num: usize,
+    pub read_count: usize,
+    pub write_count: usize,
+    pub rowmap: HashMap<usize, CsrRow>,
+    pub lru_queue: VecDeque<usize>,
+    pub output_base_addr: usize,
+    pub miss_count: usize,
+    pub b_evict_count: usize,
+    pub psum_evict_count: usize,
+    pub b_occp: usize,
+    pub psum_occp: usize,
 }
