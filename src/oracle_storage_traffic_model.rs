@@ -967,8 +967,8 @@ impl<'a> TrafficModel<'a> {
     }
 
     fn try_exec_block(&mut self, block: &Block, reduction_window: &[usize; 2]) {
-        let mut row_s = 0;
-        let mut col_s = 0;
+        let mut row_s = block.row_s;
+        let mut col_s = block.col_s;
 
         // Iterate through all window position.
         loop {
@@ -982,7 +982,7 @@ impl<'a> TrafficModel<'a> {
                 row_s,
                 reduction_window[1],
                 col_s + reduction_window[0],
-                col_s,
+                block.col_s,
                 block.width
             ) {
                 col_s += reduction_window[0];
