@@ -1,13 +1,7 @@
-use std::{
-    cmp::{max, min},
-    collections::{HashMap, VecDeque},
-    hash::Hash,
-    ops::Range,
-};
+use std::{borrow::Borrow, cmp::{max, min}, collections::{HashMap, VecDeque}, hash::Hash, ops::Range};
 
 use itertools::{izip, merge, merge_join_by, Itertools, Merge, MergeJoinBy};
 use storage::{LRUCache, VectorStorage};
-
 use crate::frontend::Accelerator;
 use crate::{
     print_type_of,
@@ -509,8 +503,10 @@ impl<'a> TrafficModel<'a> {
 
         // After oracle execution, the snapshot can be dropped.
         if self.oracle_exec {
+            self.a_mem.restore_from_snapshot();
             self.a_mem.drop_snapshot();
-            self.fiber_cache.drop_snapshot();
+            self.fiber_cache.restore_and_drop_snapshot();
+            // self.fiber_cache.drop_snapshot();
         }
 
         return true;
@@ -931,7 +927,7 @@ impl<'a> TrafficModel<'a> {
             println!("Reduction window: {:?}", &reduction_window);
             // Restore from snapshot.
             self.a_mem.restore_from_snapshot();
-            self.fiber_cache.restore_from_snapshot();
+            self.fiber_cache.partial_restore_from_snapshot();
 
             // Focus on the B matrix reuse and C matrix reuse.
             let prev_b_mem_read_count = self.fiber_cache.b_mem.read_count;
@@ -1015,17 +1011,14 @@ impl<'a> TrafficModel<'a> {
                 block.width
             );
 
-            // Fetch data.
-            let mut scaling_factors = vec![];
-            let mut fibers = vec![];
-            let mut rowidxs = vec![];
-
-            rowidxs = (row_s..min(row_s + reduction_window[1], self.a_mem.get_row_len()))
+            // Simple fetch data.
+            let mut fiber_idxs = vec![];
+            let rowidxs = (row_s..min(row_s + reduction_window[1], self.a_mem.get_row_len()))
                 .filter(|x| {
                     self.a_mem.get_rowptr(*x + 1) as i32 - self.a_mem.get_rowptr(*x) as i32 >= 0
                 })
-                .collect();
-            let mut broadcast_cache: HashMap<usize, CsrRow> = HashMap::new();
+                .collect::<Vec<usize>>();
+
             for rowidx in rowidxs.iter() {
                 let mut r_sfs = CsrRow::new(*rowidx);
                 if self.a_mem.get_rowptr(*rowidx + 1) > self.a_mem.get_rowptr(*rowidx) + col_s {
@@ -1038,61 +1031,39 @@ impl<'a> TrafficModel<'a> {
                     r_sfs = self.a_mem.read(*rowidx, col_s, ele_num).unwrap();
                 }
                 let mut fbs = vec![];
-                let mut sfs = vec![];
-                for (colid, value) in r_sfs.enumerate() {
-                    if broadcast_cache.contains_key(colid) {
-                        let csrrow = broadcast_cache[colid].clone();
-                        fbs.push(csrrow);
-                        sfs.push((*colid, *value));
-                    } else {
-                        match self.fiber_cache.read(*colid) {
-                            Some(csrrow) => {
-                                broadcast_cache.insert(*colid, csrrow.clone());
-                                fbs.push(csrrow);
-                                sfs.push((*colid, *value));
-                            }
-                            None => (),
+                for (colid, _) in r_sfs.enumerate() {
+                    match self.fiber_cache.read(*colid) {
+                        Some(csrrow) => {
+                            fbs.push(csrrow.indptr);
                         }
+                        None => (),
                     }
                 }
-                scaling_factors.push(sfs);
-                fibers.push(fbs);
+                fiber_idxs.push(fbs);
             }
 
-            // Compute data.
+            // Simple compute data.
             let mut psums = vec![];
-            for (rowidx, sfs, fbs) in izip!(&rowidxs, &scaling_factors, fibers) {
+            for fbs in fiber_idxs {
                 // Compute psum.
-                if sfs.len() == 0 {
+                if fbs.len() == 0 {
                     psums.push(None);
                     continue;
                 }
-                let mut psum = CsrRow::new(*rowidx);
-                for (sf, fb) in izip!(sfs, fbs) {
-                    for (colid, value) in izip!(fb.indptr, fb.data) {
-                        match psum.indptr.binary_search(&colid) {
-                            Ok(pos) => psum.data[pos] += sf.1 * value,
-                            Err(pos) => {
-                                psum.data.insert(pos, sf.1 * value);
-                                psum.indptr.insert(pos, colid);
-                            }
+                let mut psum: Vec<usize> = vec![];
+                for fb in fbs.iter() {
+                    for colid in fb.iter() {
+                        if let Err(pos) = psum.binary_search(&colid) {
+                            psum.insert(pos, *colid);
                         }
                     }
                 }
                 psums.push(Some(psum));
             }
 
-            // Write back.
-            for (rowidx, output_fiber) in rowidxs
-                .into_iter()
-                .zip(psums.into_iter())
-                .filter(|(_, y)| y.is_some())
-            {
-                let mut output_fiber = output_fiber.unwrap();
-                output_fiber.rowptr = self.output_base_addr;
-                self.output_base_addr += 1;
-                self.fiber_cache.write(output_fiber);
-            }
+            // Simplified write back. Not consider the complex cache swap out operations.
+            self.fiber_cache.write_count +=
+                psums.iter().fold(0, |acc, c| acc+c.as_ref().map_or(0, |v|v.len()));
         }
     }
 }

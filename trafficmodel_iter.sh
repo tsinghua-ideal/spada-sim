@@ -10,12 +10,6 @@ nn=('alexnetconv0' 'alexnetconv1' 'alexnetconv2' 'alexnetconv3' 'alexnetconv4'
 'resnet50layer2_conv3' 'resnet50layer3_conv1' 'resnet50layer3_conv2' 'resnet50layer3_conv3'
 'resnet50layer4_conv1' 'resnet50layer4_conv2' 'resnet50layer4_conv3' 'resnet50fc')
 
-# echo "Executing use $0"
-# echo "$1"
-# if [["$1" == "ss"]]; then
-#     for i in "${ss[@]}"; do
-#         nohup ./target/debug/omega-sim trafficmodel $0 $1 i >
-
 cur_date=$(date +'%m_%d_%H')
 echo "----Execute use $1 on $2----"
 echo "Write output to $3/${cur_date}"

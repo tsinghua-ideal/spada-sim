@@ -63,3 +63,12 @@
 --2021.06.08--
 1. Fix 06.06.1, 06.07.3.
 2. TODO: Check whether the Cache access count, the B access count are correct.
+
+--2021.06.20--
+1. Minimize data allocation as much as possible. (Eliminate the actual writeback of the psum)
+2. Inspect into the slide window.
+
+--2021.06.21--
+1. Fix 06.20.1, 06.21.2
+2. Minimize the data clone.
+3. Inspect the two block plans.

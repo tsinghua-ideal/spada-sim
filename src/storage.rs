@@ -1,7 +1,7 @@
 use fmt::write;
 use itertools::{Itertools, izip};
-use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, fmt, hash::Hash, ops::Index, usize};
-
+use pyo3::ffi::PyCodec_StrictErrors;
+use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, fmt, hash::Hash, mem, ops::Index, usize};
 use crate::gemm::GEMM;
 
 #[derive(Debug, Clone)]
@@ -400,6 +400,7 @@ impl<'a> Snapshotable for LRUCache<'a> {
             psum_evict_count: self.psum_evict_count,
             b_occp: self.b_occp,
             psum_occp: self.psum_occp,
+            rowmap_inc: vec![],
         });
         self.b_mem.take_snapshot();
         self.psum_mem.take_snapshot();
@@ -465,6 +466,23 @@ impl<'a> LRUCache<'a> {
         }
     }
 
+    fn rowmap_insert(&mut self, rowptr: usize, csrrow: CsrRow) {
+        if let Some(ref mut snp) = self.snapshot {
+            snp.rowmap_inc.push((rowptr, None));
+        }
+        self.rowmap.insert(rowptr, csrrow);
+    }
+
+    fn rowmap_remove(&mut self, rowid: &usize) -> Option<CsrRow> {
+        let csrrow = self.rowmap.remove(rowid);
+        if let Some(ref mut snp) = self.snapshot {
+            if let Some(ref c) = csrrow {
+                snp.rowmap_inc.push((*rowid, Some(c.clone())));
+            }
+        }
+        return csrrow;
+    }
+
     pub fn write(&mut self, csrrow: CsrRow) {
         if self.is_psum_row(csrrow.rowptr) {
             self.psum_occp += csrrow.size();
@@ -477,7 +495,7 @@ impl<'a> LRUCache<'a> {
             self.cur_num += num;
             self.lru_queue.push_back(csrrow.rowptr);
             if self.track_count { self.write_count += csrrow.size(); }
-            self.rowmap.insert(csrrow.rowptr, csrrow);
+            self.rowmap_insert(csrrow.rowptr, csrrow);
         } else {
             if let Err(err) = self.freeup_space(num) {
                 panic!("{}", err);
@@ -485,7 +503,7 @@ impl<'a> LRUCache<'a> {
             self.cur_num += num;
             self.lru_queue.push_back(csrrow.rowptr);
             if self.track_count { self.write_count += csrrow.size(); }
-            self.rowmap.insert(csrrow.rowptr, csrrow);
+            self.rowmap_insert(csrrow.rowptr, csrrow);
         }
     }
 
@@ -499,13 +517,13 @@ impl<'a> LRUCache<'a> {
                 }
             }
             if self.is_psum_row(popid) {
-                let popped_csrrow = self.rowmap.remove(&popid).unwrap();
+                let popped_csrrow = self.rowmap_remove(&popid).unwrap();
                 self.cur_num -= popped_csrrow.size();
                 if self.track_count { self.psum_evict_count += popped_csrrow.size(); }
                 self.psum_occp -= popped_csrrow.size();
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
-                let evict_size = self.rowmap.remove(&popid).unwrap().size();
+                let evict_size = self.rowmap_remove(&popid).unwrap().size();
                 self.cur_num -= evict_size;
                 self.b_occp -= evict_size;
                 if self.track_count { self.b_evict_count += evict_size; }
@@ -523,7 +541,7 @@ impl<'a> LRUCache<'a> {
 
     pub fn freeup_row(&mut self, rowid: usize) -> Result<CsrRow, String> {
         if self.rowmap.contains_key(&rowid) {
-            let removed_row = self.rowmap.remove(&rowid).unwrap();
+            let removed_row = self.rowmap_remove(&rowid).unwrap();
             self.cur_num -= removed_row.size();
             if self.is_psum_row(rowid) {
                 self.psum_occp -= removed_row.size();
@@ -538,8 +556,11 @@ impl<'a> LRUCache<'a> {
 
     pub fn read_cache(&mut self, rowid: usize) -> Option<CsrRow> {
         if self.rowmap.contains_key(&rowid) {
-            self.lru_queue
-                .remove(self.lru_queue.iter().position(|&x| x == rowid).unwrap());
+            // self.lru_queue
+            //     .remove(self.lru_queue.iter().position(|&x| x == rowid).unwrap());
+            if let Some(pos) = self.lru_queue.iter().position(|&x| x == rowid) {
+                self.lru_queue.remove(pos);
+            }
             self.lru_queue.push_back(rowid);
             let csrrow = self.rowmap.get(&rowid).unwrap().clone();
             if self.track_count { self.read_count += csrrow.size(); }
@@ -621,7 +642,7 @@ impl<'a> LRUCache<'a> {
 
     pub fn swapout(&mut self, rowid: usize) {
         if self.rowmap.contains_key(&rowid) {
-            let popped_csrrow = self.rowmap.remove(&rowid).unwrap();
+            let popped_csrrow = self.rowmap_remove(&rowid).unwrap();
             self.cur_num -= popped_csrrow.size();
             if self.is_psum_row(rowid) {
                 self.psum_occp -= popped_csrrow.size();
@@ -634,6 +655,62 @@ impl<'a> LRUCache<'a> {
 
     pub fn is_psum_row(&self, rowid: usize) -> bool {
         return rowid >= self.output_base_addr;
+    }
+
+    /// Partially restore the statistic data without recovering the queue.
+    pub fn partial_restore_from_snapshot(&mut self) {
+        match self.snapshot {
+            Some(ref mut snp) => {
+                for (rowid, csrrow) in snp.rowmap_inc.drain(..) {
+                    // If csrrow is None then it is an add operation; Otherwise it is a deletion.
+                    if let Some(c) = csrrow {
+                        self.rowmap.insert(rowid, c);
+                    } else {
+                        self.rowmap.remove(&rowid);
+                    }
+                }
+                self.cur_num = snp.cur_num;
+                self.read_count = snp.read_count;
+                self.write_count = snp.write_count;
+                self.output_base_addr = snp.output_base_addr;
+                self.miss_count = snp.miss_count;
+                self.b_evict_count = snp.b_evict_count;
+                self.psum_evict_count = snp.psum_evict_count;
+                self.b_occp = snp.b_occp;
+                self.psum_occp = snp.psum_occp;
+            },
+            None => {
+                panic!("No snapshot to be restored!");
+            }
+        }
+        self.b_mem.restore_from_snapshot();
+        self.psum_mem.restore_from_snapshot();
+    }
+
+    /// Restore data directly from using the snapshot data without cloning.
+    pub fn restore_and_drop_snapshot(&mut self) {
+        match self.snapshot {
+            Some(ref mut snp) => {
+                self.cur_num = snp.cur_num;
+                self.read_count = snp.read_count;
+                self.write_count = snp.write_count;
+                // self.rowmap = snp.rowmap.clone();
+                self.rowmap = mem::replace(&mut snp.rowmap, HashMap::new());
+                // self.lru_queue = snp.lru_queue.clone();
+                self.lru_queue = mem::replace(&mut snp.lru_queue, VecDeque::new());
+                self.output_base_addr = snp.output_base_addr;
+                self.miss_count = snp.miss_count;
+                self.b_evict_count = snp.b_evict_count;
+                self.psum_evict_count = snp.psum_evict_count;
+                self.b_occp = snp.b_occp;
+                self.psum_occp = snp.psum_occp;
+            },
+            None => {
+                panic!("No snapshot to be restored!");
+            }
+        }
+        self.b_mem.restore_from_snapshot();
+        self.psum_mem.restore_from_snapshot();
     }
 }
 
@@ -649,4 +726,5 @@ struct CacheSnapshot {
     pub psum_evict_count: usize,
     pub b_occp: usize,
     pub psum_occp: usize,
+    pub rowmap_inc: Vec<(usize, Option<CsrRow>)>,
 }

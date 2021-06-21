@@ -256,6 +256,8 @@ impl<'a> TrafficModel<'a> {
             let prev_miss_count = self.fiber_cache.miss_count;
             let prev_b_evict_count = self.fiber_cache.b_evict_count;
             let prev_psum_evict_count = self.fiber_cache.psum_evict_count;
+            let prev_cache_read_count = self.fiber_cache.read_count;
+            let prev_cache_write_count = self.fiber_cache.write_count;
 
             // Each PE execute a window.
             for i in 0..self.pe_num {
@@ -361,6 +363,9 @@ impl<'a> TrafficModel<'a> {
                 self.write_psum(rowidxs, output_fibers);
             }
 
+            println!("Cache read_count: + {} -> {}, write_count: + {} -> {}",
+                self.fiber_cache.read_count - prev_cache_read_count, self.fiber_cache.read_count,
+                self.fiber_cache.write_count - prev_cache_write_count, self.fiber_cache.write_count);
             println!("Cache occp: {} in {}, miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}",
                 self.fiber_cache.cur_num, self.fiber_cache.capability,
                 self.fiber_cache.miss_count - prev_miss_count, self.fiber_cache.miss_count,
@@ -397,19 +402,6 @@ impl<'a> TrafficModel<'a> {
         while i != self.merge_queue.len() {
             let rowid = self.merge_queue[i];
             let psum_addrs = self.output_trackers.get(&rowid).unwrap();
-            // if psum_addrs.len() == 1
-            //     && self.merge_trackers[&rowid].finished
-            //     && self.merge_trackers[&rowid].blocks.len() == 0 {
-            //     println!(
-            //         "Assign jobs: swapout addr {} of {}",
-            //         psum_addrs[0], self.merge_queue[i]
-            //     );
-            //     self.merge_queue.remove(i);
-            //     self.fiber_cache.swapout(psum_addrs[0]);
-            // } else {
-            //     i += 1;
-            //     psums_num += psum_addrs.len();
-            // }
             if psum_addrs.len() == 1 {
                 if self.merge_trackers[&rowid].finished
                 && self.merge_trackers[&rowid].blocks.len() == 0 {
@@ -685,6 +677,8 @@ impl<'a> TrafficModel<'a> {
                 reduction_window[1] *= 2;
             }
         }
+
+        let reduction_window = [2, 4];
 
         reduction_window
     }
