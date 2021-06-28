@@ -8,6 +8,7 @@ mod storage;
 mod storage_traffic_model;
 mod util;
 mod oracle_storage_traffic_model;
+mod b_reuse_counter;
 
 use std::cmp::min;
 
@@ -22,6 +23,7 @@ use crate::preprocessing::affinity_based_row_reordering;
 use crate::py2rust::load_pickled_gemms;
 use crate::storage::CsrMatStorage;
 use structopt::StructOpt;
+use b_reuse_counter::BReuseCounter;
 
 // Workload included:
 // ss: ['2cubes_sphere', 'amazon0312', 'ca-CondMat', 'cage12', 'cit-Patents',
@@ -41,24 +43,25 @@ fn main() {
     let omega_config = parse_config("omega_config_1mb.json").unwrap();
     let cli: Cli = Cli::from_args();
 
+    let gemm_fp = match cli.category {
+        WorkloadCate::NN => omega_config.nn_filepath,
+        WorkloadCate::SS => omega_config.ss_filepath,
+        WorkloadCate::Desired => omega_config.desired_filepath,
+    };
+    let gemm = load_pickled_gemms(&gemm_fp, &cli.workload).unwrap();
+    let a_avg_row_len = gemm.a.nnz() / gemm.a.rows();
+    let b_avg_row_len = gemm.b.nnz() / gemm.b.rows();
+    println!("Get GEMM {}", gemm.name);
+    println!("{}", &gemm);
+    println!(
+        "Avg row len of A: {}, Avg row len of B: {}",
+        a_avg_row_len, b_avg_row_len
+    );
+
+    let validating_product_mat = (&gemm.a * &gemm.b).to_csr();
+
     match cli.simulator {
         Simulator::TrafficModel => {
-            let gemm_fp = match cli.category {
-                WorkloadCate::NN => omega_config.nn_filepath,
-                WorkloadCate::SS => omega_config.ss_filepath,
-                WorkloadCate::Desired => omega_config.desired_filepath,
-            };
-            let gemm = load_pickled_gemms(&gemm_fp, &cli.workload).unwrap();
-            let a_avg_row_len = gemm.a.nnz() / gemm.a.rows();
-            let b_avg_row_len = gemm.b.nnz() / gemm.b.rows();
-            println!("Get GEMM {}", gemm.name);
-            println!("{}", &gemm);
-            println!(
-                "Avg row len of A: {}, Avg row len of B: {}",
-                a_avg_row_len, b_avg_row_len
-            );
-
-            let validating_product_mat = (&gemm.a * &gemm.b).to_csr();
 
             let (mut dram_a, mut dram_b) = CsrMatStorage::init_with_gemm(gemm);
             let mut dram_psum = VectorStorage::new();
@@ -91,34 +94,34 @@ fn main() {
             // Oracle execution: to use the optimal reduction window shape.
             let oracle_exec = true;
 
-            // let mut traffic_model = storage_traffic_model::TrafficModel::new(
-            //     omega_config.pe_num,
-            //     omega_config.lane_num,
-            //     omega_config.cache_size,
-            //     omega_config.word_byte,
-            //     output_base_addr,
-            //     default_reduction_window,
-            //     default_block_shape,
-            //     &mut dram_a,
-            //     &mut dram_b,
-            //     &mut dram_psum,
-            //     cli.accelerator.clone(),
-            // );
-
-            let mut traffic_model = oracle_storage_traffic_model::TrafficModel::new(
-                    omega_config.pe_num,
-                    omega_config.lane_num,
-                    omega_config.cache_size,
-                    omega_config.word_byte,
-                    output_base_addr,
-                    default_reduction_window,
-                    default_block_shape,
-                    &mut dram_a,
-                    &mut dram_b,
-                    &mut dram_psum,
-                    cli.accelerator.clone(),
-                    oracle_exec,
+            let mut traffic_model = storage_traffic_model::TrafficModel::new(
+                omega_config.pe_num,
+                omega_config.lane_num,
+                omega_config.cache_size,
+                omega_config.word_byte,
+                output_base_addr,
+                default_reduction_window,
+                default_block_shape,
+                &mut dram_a,
+                &mut dram_b,
+                &mut dram_psum,
+                cli.accelerator.clone(),
             );
+
+            // let mut traffic_model = oracle_storage_traffic_model::TrafficModel::new(
+            //         omega_config.pe_num,
+            //         omega_config.lane_num,
+            //         omega_config.cache_size,
+            //         omega_config.word_byte,
+            //         output_base_addr,
+            //         default_reduction_window,
+            //         default_block_shape,
+            //         &mut dram_a,
+            //         &mut dram_b,
+            //         &mut dram_psum,
+            //         cli.accelerator.clone(),
+            //         oracle_exec,
+            // );
 
             traffic_model.execute();
 
@@ -159,6 +162,55 @@ fn main() {
                     &idx, sliced_indptr, sliced_data
                 );
             }
+        },
+
+        Simulator::BReuseCounter => {
+            let (mut dram_a, mut dram_b) = CsrMatStorage::init_with_gemm(gemm);
+            let mut b_reuse_counter = BReuseCounter::new(
+                &mut dram_a,
+                &mut dram_b,
+                omega_config.cache_size,
+                omega_config.word_byte,
+            );
+            let block_num = 8;
+            let b_row_len = b_reuse_counter.collect_row_length();
+            let oracle_fetch = b_reuse_counter.oracle_fetch();
+            let reuse_distance = b_reuse_counter.reuse_row_distance();
+            let cache_restricted_collect = b_reuse_counter.cached_fetch();
+            let blocked_fetch = b_reuse_counter.blocked_fetch(block_num);
+
+            println!("-----Result-----");
+            println!("Row reuse distance {} | x occr {} | x occr & len {}",
+                reuse_distance.values().fold(0.0, |c, v| c + v[0]) / reuse_distance.len() as f32,
+                reuse_distance.iter().map(|(k, v)| oracle_fetch[k] as f32 * v[0]).sum::<f32>()
+                    / oracle_fetch.values().sum::<usize>() as f32,
+                reuse_distance.iter().fold(0.0,
+                    |c, (k, v)| c + (oracle_fetch[k] * b_row_len[k]) as f32 * v[0])
+                    / oracle_fetch.iter().fold(0.0, |c, (k, _)| c + (oracle_fetch[k] * b_row_len[k]) as f32)
+                );
+            println!("Ele reuse distance {} | x occr {} | x occr & len {}",
+                reuse_distance.values().fold(0.0, |c, v| c + v[1]) / reuse_distance.len() as f32,
+                reuse_distance.iter().map(|(k, v)| oracle_fetch[k] as f32 * v[1]).sum::<f32>()
+                    / oracle_fetch.values().sum::<usize>() as f32,
+                reuse_distance.iter().fold(0.0,
+                    |c, (k, v)| c + (oracle_fetch[k] * b_row_len[k]) as f32 * v[1])
+                    / oracle_fetch.iter().fold(0.0, |c, (k, _)| c + (oracle_fetch[k] * b_row_len[k]) as f32)
+                );
+            println!("Row distance dist: <= 4: {:.3} <= 8: {:.3} <= 16: {:.3} <= 32: {:.3} <= 64: {:.3}",
+                reuse_distance.values().filter(|x| x[0] <= 4.0).count() as f32 / reuse_distance.len() as f32,
+                reuse_distance.values().filter(|x| x[0] <= 8.0).count() as f32 / reuse_distance.len() as f32,
+                reuse_distance.values().filter(|x| x[0] <= 16.0).count() as f32 / reuse_distance.len() as f32,
+                reuse_distance.values().filter(|x| x[0] <= 32.0).count() as f32 / reuse_distance.len() as f32,
+                reuse_distance.values().filter(|x| x[0] <= 64.0).count() as f32 / reuse_distance.len() as f32);
+            println!("Ele distance dist: <= 256: {:.3} <= 1024: {:.3} <= 4096: {:.3} <= 16384: {:.3} <= 65536: {:.3}",
+                reuse_distance.values().filter(|x| x[1] <= 256.0).count() as f32 / reuse_distance.len() as f32,
+                reuse_distance.values().filter(|x| x[1] <= 1024.0).count() as f32 / reuse_distance.len() as f32,
+                reuse_distance.values().filter(|x| x[1] <= 4096.0).count() as f32 / reuse_distance.len() as f32,
+                reuse_distance.values().filter(|x| x[1] <= 16384.0).count() as f32 / reuse_distance.len() as f32,
+                reuse_distance.values().filter(|x| x[1] <= 65536.0).count() as f32 / reuse_distance.len() as f32);
+            println!("Oracle fetch: {}", oracle_fetch.len());
+            println!("Cache restricted fetch: {}", cache_restricted_collect.values().sum::<usize>());
+            println!("{} blocked fetch: {}", block_num, blocked_fetch.values().sum::<usize>());
         }
 
         Simulator::AccurateSimu => {

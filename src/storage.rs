@@ -484,25 +484,26 @@ impl<'a> LRUCache<'a> {
     }
 
     pub fn write(&mut self, csrrow: CsrRow) {
+        let row_size = csrrow.size();
+        // println!("*cache write invoked with count {} row {}", self.write_count, row_size);
         if self.is_psum_row(csrrow.rowptr) {
-            self.psum_occp += csrrow.size();
+            self.psum_occp += row_size;
         } else {
-            self.b_occp += csrrow.size();
+            self.b_occp += row_size;
         }
 
-        let num = csrrow.size();
-        if self.cur_num + num <= self.capability {
-            self.cur_num += num;
+        if self.cur_num + row_size <= self.capability {
+            self.cur_num += row_size;
             self.lru_queue.push_back(csrrow.rowptr);
-            if self.track_count { self.write_count += csrrow.size(); }
+            if self.track_count { self.write_count += row_size; }
             self.rowmap_insert(csrrow.rowptr, csrrow);
         } else {
-            if let Err(err) = self.freeup_space(num) {
+            if let Err(err) = self.freeup_space(row_size) {
                 panic!("{}", err);
             }
-            self.cur_num += num;
+            self.cur_num += row_size;
             self.lru_queue.push_back(csrrow.rowptr);
-            if self.track_count { self.write_count += csrrow.size(); }
+            if self.track_count { self.write_count += row_size; }
             self.rowmap_insert(csrrow.rowptr, csrrow);
         }
     }
@@ -607,7 +608,7 @@ impl<'a> LRUCache<'a> {
     pub fn read(&mut self, rowid: usize) -> Option<CsrRow> {
         match self.read_cache(rowid) {
             Some(csrrow) => {
-                if self.track_count { self.read_count += csrrow.size(); }
+                // if self.track_count { self.read_count += csrrow.size(); }
                 Some(csrrow)
             }
             None => {

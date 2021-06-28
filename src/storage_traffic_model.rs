@@ -286,7 +286,7 @@ impl<'a> TrafficModel<'a> {
                     &self.pes[i].merge_mode,
                     output_fibers
                         .iter()
-                        .map(|c| c.as_ref().map_or(0, |v| v.len()))
+                        .map(|c| c.as_ref().map_or(0, |v| v.size()))
                         .collect::<Vec<usize>>()
                 );
                 if !self.pes[i].merge_mode {
@@ -341,6 +341,7 @@ impl<'a> TrafficModel<'a> {
                         // }
 
                         // Merge scheme 2:
+                        // Every time a tile of a row is finished, start to merge the psums.
                         if output_fibers[row_pos].is_some()
                             && !self.is_window_valid(
                                 *row,
@@ -353,7 +354,6 @@ impl<'a> TrafficModel<'a> {
                             let tracker = self.merge_trackers.get_mut(row).unwrap();
                             // Unregister current computed block from the merge tracker.
                             tracker.blocks.retain(|x| *x != pe.cur_block.get_idx());
-                            // Every time a tile of a row is finished, start to merge the psums.
                             self.merge_queue.push(*row);
                         }
                     }
@@ -678,7 +678,7 @@ impl<'a> TrafficModel<'a> {
             }
         }
 
-        let reduction_window = [2, 4];
+        let reduction_window = [8, 1];
 
         reduction_window
     }

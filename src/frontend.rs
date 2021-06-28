@@ -22,6 +22,7 @@ arg_enum! {
     pub enum Simulator {
         AccurateSimu,
         TrafficModel,
+        BReuseCounter,
     }
 }
 
