@@ -32,6 +32,7 @@ arg_enum! {
         Ip,
         Op,
         Omega,
+        NewOmega,
     }
 }
 

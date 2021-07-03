@@ -79,7 +79,12 @@ impl BlockTracker {
     }
 
     pub fn find_left(&self, cur_block: &[usize; 2]) -> Option<[usize; 2]> {
-        let row_pos = self.row_s_list.binary_search(&cur_block[1]).unwrap();
+        let row_pos = match self.row_s_list.binary_search(&cur_block[1]) {
+            Ok(r) | Err(r) => r as i32 - 1
+        };
+        if row_pos < 0 { return None; }
+        let row_pos = row_pos as usize;
+
         let col_pos = match self.col_s_list[row_pos].binary_search(&cur_block[0]) {
             Ok(c) | Err(c) => c as i32 - 1,
         };
@@ -366,8 +371,10 @@ impl<'a> TrafficModel<'a> {
             println!("Cache read_count: + {} -> {}, write_count: + {} -> {}",
                 self.fiber_cache.read_count - prev_cache_read_count, self.fiber_cache.read_count,
                 self.fiber_cache.write_count - prev_cache_write_count, self.fiber_cache.write_count);
-            println!("Cache occp: {} in {}, miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}",
+            println!("Cache occp: {} in {}, psum_occp: {}, b_occp: {}",
                 self.fiber_cache.cur_num, self.fiber_cache.capability,
+                self.fiber_cache.psum_occp, self.fiber_cache.b_occp);
+            println!("Cache miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}",
                 self.fiber_cache.miss_count - prev_miss_count, self.fiber_cache.miss_count,
                 self.fiber_cache.b_evict_count - prev_b_evict_count, self.fiber_cache.b_evict_count,
                 self.fiber_cache.psum_evict_count - prev_psum_evict_count, self.fiber_cache.psum_evict_count);
@@ -534,9 +541,9 @@ impl<'a> TrafficModel<'a> {
             } else {
                 // Block shape adaptation can be added here. For now we only support adjust block
                 // when finishing traverse over K dim.
-                self.adjust_block();
                 self.row_s += self.block_shape[1];
                 self.col_s = 0;
+                self.adjust_block([self.col_s, self.row_s]);
             }
         }
     }
@@ -645,10 +652,46 @@ impl<'a> TrafficModel<'a> {
 
     /// Block shape adaptation can be added here.
     /// For now we only support adjust block when finishing traverse over K dim.
-    fn adjust_block(&mut self) {}
+    fn adjust_block(&mut self, cur_idx: [usize; 2]) {
+        match self.accelerator {
+            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {},
+            Accelerator::NewOmega => {
+                let neighbor_blocks = self.get_neighbor_blocks(&cur_idx);
+
+                // If no neighbor blocks, then use the default reduction window shape.
+                if neighbor_blocks.len() == 0 {
+                    return;
+                }
+                // We look at the neighbor blocks and find the block with the largest total reuse.
+                let max_reuse_block = neighbor_blocks[neighbor_blocks
+                    .iter()
+                    .map(|x| self.exec_trackers[x].c_reuse() + self.exec_trackers[x].b_reuse())
+                    .position_max_by(|a, b| a.partial_cmp(b).unwrap())
+                    .unwrap()];
+
+                let cr = self.exec_trackers[&max_reuse_block].c_reuse();
+                let br = self.exec_trackers[&max_reuse_block].b_reuse();
+
+                if cr >= br {
+                    if self.block_shape[1] > 1 {
+                        self.block_shape[1] /= 2;
+                    }
+                } else {
+                    if self.block_shape[1] * 2 <= self.lane_num {
+                        self.block_shape[1] *= 2;
+                    }
+                }
+            }
+        }
+    }
 
     /// Adjust the reduction window for the current block.
     fn adjust_window(&mut self, cur_idx: [usize; 2], block_shape: [usize; 2]) -> [usize; 2] {
+        // The new omega scheme.
+        if self.accelerator == Accelerator::NewOmega {
+            return [self.lane_num / self.block_shape[1], self.block_shape[1]];
+        }
+
         let neighbor_blocks = self.get_neighbor_blocks(&cur_idx);
 
         // If no neighbor blocks, then use the default reduction window shape.

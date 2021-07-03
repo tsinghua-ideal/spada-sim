@@ -249,6 +249,10 @@ impl CsrMatStorage {
     pub fn get_row_len(&self) -> usize {
         self.indptr.len() - 1
     }
+
+    pub fn get_nonzero(&self) -> usize {
+        self.indices.len()
+    }
 }
 
 pub struct VectorStorage {
@@ -519,12 +523,14 @@ impl<'a> LRUCache<'a> {
             }
             if self.is_psum_row(popid) {
                 let popped_csrrow = self.rowmap_remove(&popid).unwrap();
+                println!("*freerow {} and get {}", popid, popped_csrrow.size());
                 self.cur_num -= popped_csrrow.size();
                 if self.track_count { self.psum_evict_count += popped_csrrow.size(); }
                 self.psum_occp -= popped_csrrow.size();
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
                 let evict_size = self.rowmap_remove(&popid).unwrap().size();
+                println!("*freerow {} and get {}", popid, evict_size);
                 self.cur_num -= evict_size;
                 self.b_occp -= evict_size;
                 if self.track_count { self.b_evict_count += evict_size; }

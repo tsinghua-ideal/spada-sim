@@ -81,12 +81,12 @@ fn main() {
             let output_base_addr = dram_b.indptr.len();
             // Determine the default window & block shape.
             let default_reduction_window = match cli.accelerator {
-                Accelerator::Ip | Accelerator::Omega => [omega_config.lane_num, 1],
+                Accelerator::Ip | Accelerator::Omega | Accelerator::NewOmega => [omega_config.lane_num, 1],
                 Accelerator::Op => [1, omega_config.lane_num],
             };
 
             let default_block_shape = match cli.accelerator {
-                Accelerator::Ip => [omega_config.lane_num, 1],
+                Accelerator::Ip | Accelerator::NewOmega => [omega_config.lane_num, 1],
                 Accelerator::Omega => [omega_config.block_shape[0], omega_config.block_shape[1]],
                 Accelerator::Op => [1, usize::MAX],
             };
@@ -172,42 +172,79 @@ fn main() {
                 omega_config.cache_size,
                 omega_config.word_byte,
             );
-            let block_num = 8;
+            let block_num = 4;
             let b_row_len = b_reuse_counter.collect_row_length();
             let oracle_fetch = b_reuse_counter.oracle_fetch();
-            let reuse_distance = b_reuse_counter.reuse_row_distance();
+            let avg_reuse_distance = b_reuse_counter.reuse_row_distance();
             let cache_restricted_collect = b_reuse_counter.cached_fetch();
             let blocked_fetch = b_reuse_counter.blocked_fetch(block_num);
+            let affinity_collect = b_reuse_counter.neighbor_row_affinity();
 
             println!("-----Result-----");
+            println!("Row length dist: entries: {} >=256: {} >=180: {} >=128: {} >=90: {}",
+                b_row_len.len(),
+                b_row_len.values().filter(|&x| *x >= 256).count(),
+                b_row_len.values().filter(|&x| *x >= 180).count(),
+                b_row_len.values().filter(|&x| *x >= 128).count(),
+                b_row_len.values().filter(|&x| *x >= 90).count());
             println!("Row reuse distance {} | x occr {} | x occr & len {}",
-                reuse_distance.values().fold(0.0, |c, v| c + v[0]) / reuse_distance.len() as f32,
-                reuse_distance.iter().map(|(k, v)| oracle_fetch[k] as f32 * v[0]).sum::<f32>()
+                avg_reuse_distance.values().fold(0.0, |c, v| c + v[0]) / avg_reuse_distance.len() as f32,
+                avg_reuse_distance.iter().map(|(k, v)| oracle_fetch[k] as f32 * v[0]).sum::<f32>()
                     / oracle_fetch.values().sum::<usize>() as f32,
-                reuse_distance.iter().fold(0.0,
+                avg_reuse_distance.iter().fold(0.0,
                     |c, (k, v)| c + (oracle_fetch[k] * b_row_len[k]) as f32 * v[0])
                     / oracle_fetch.iter().fold(0.0, |c, (k, _)| c + (oracle_fetch[k] * b_row_len[k]) as f32)
                 );
             println!("Ele reuse distance {} | x occr {} | x occr & len {}",
-                reuse_distance.values().fold(0.0, |c, v| c + v[1]) / reuse_distance.len() as f32,
-                reuse_distance.iter().map(|(k, v)| oracle_fetch[k] as f32 * v[1]).sum::<f32>()
+                avg_reuse_distance.values().fold(0.0, |c, v| c + v[1]) / avg_reuse_distance.len() as f32,
+                avg_reuse_distance.iter().map(|(k, v)| oracle_fetch[k] as f32 * v[1]).sum::<f32>()
                     / oracle_fetch.values().sum::<usize>() as f32,
-                reuse_distance.iter().fold(0.0,
+                avg_reuse_distance.iter().fold(0.0,
                     |c, (k, v)| c + (oracle_fetch[k] * b_row_len[k]) as f32 * v[1])
                     / oracle_fetch.iter().fold(0.0, |c, (k, _)| c + (oracle_fetch[k] * b_row_len[k]) as f32)
                 );
-            println!("Row distance dist: <= 4: {:.3} <= 8: {:.3} <= 16: {:.3} <= 32: {:.3} <= 64: {:.3}",
-                reuse_distance.values().filter(|x| x[0] <= 4.0).count() as f32 / reuse_distance.len() as f32,
-                reuse_distance.values().filter(|x| x[0] <= 8.0).count() as f32 / reuse_distance.len() as f32,
-                reuse_distance.values().filter(|x| x[0] <= 16.0).count() as f32 / reuse_distance.len() as f32,
-                reuse_distance.values().filter(|x| x[0] <= 32.0).count() as f32 / reuse_distance.len() as f32,
-                reuse_distance.values().filter(|x| x[0] <= 64.0).count() as f32 / reuse_distance.len() as f32);
-            println!("Ele distance dist: <= 256: {:.3} <= 1024: {:.3} <= 4096: {:.3} <= 16384: {:.3} <= 65536: {:.3}",
-                reuse_distance.values().filter(|x| x[1] <= 256.0).count() as f32 / reuse_distance.len() as f32,
-                reuse_distance.values().filter(|x| x[1] <= 1024.0).count() as f32 / reuse_distance.len() as f32,
-                reuse_distance.values().filter(|x| x[1] <= 4096.0).count() as f32 / reuse_distance.len() as f32,
-                reuse_distance.values().filter(|x| x[1] <= 16384.0).count() as f32 / reuse_distance.len() as f32,
-                reuse_distance.values().filter(|x| x[1] <= 65536.0).count() as f32 / reuse_distance.len() as f32);
+            // println!("Row distance dist: <= 4: {:.5} <= 8: {:.5} <= 16: {:.5} <= 32: {:.5} <= 64: {:.5}",
+            //     reuse_distance.values().filter(|x| x[0] <= 4.0).count() as f32 / reuse_distance.len() as f32,
+            //     reuse_distance.values().filter(|x| x[0] <= 8.0).count() as f32 / reuse_distance.len() as f32,
+            //     reuse_distance.values().filter(|x| x[0] <= 16.0).count() as f32 / reuse_distance.len() as f32,
+            //     reuse_distance.values().filter(|x| x[0] <= 32.0).count() as f32 / reuse_distance.len() as f32,
+            //     reuse_distance.values().filter(|x| x[0] <= 64.0).count() as f32 / reuse_distance.len() as f32);
+            // println!("Ele distance dist: <= 256: {:.5} <= 1024: {:.5} <= 4096: {:.5} <= 16384: {:.5} <= 65536: {:.5}",
+            //     reuse_distance.values().filter(|x| x[1] <= 256.0).count() as f32 / reuse_distance.len() as f32,
+            //     reuse_distance.values().filter(|x| x[1] <= 1024.0).count() as f32 / reuse_distance.len() as f32,
+            //     reuse_distance.values().filter(|x| x[1] <= 4096.0).count() as f32 / reuse_distance.len() as f32,
+            //     reuse_distance.values().filter(|x| x[1] <= 16384.0).count() as f32 / reuse_distance.len() as f32,
+            //     reuse_distance.values().filter(|x| x[1] <= 65536.0).count() as f32 / reuse_distance.len() as f32);
+            println!("Row distance dist: entries: {} <=4: {} <=8: {} <=16: {} <=32: {} \
+                    <=64: {} <=128: {} <=256: {} <=512: {} <=1024: {}",
+                avg_reuse_distance.len(),
+                avg_reuse_distance.values().filter(|x| x[0] <= 4.0).count(),
+                avg_reuse_distance.values().filter(|x| x[0] <= 8.0).count(),
+                avg_reuse_distance.values().filter(|x| x[0] <= 16.0).count(),
+                avg_reuse_distance.values().filter(|x| x[0] <= 32.0).count(),
+                avg_reuse_distance.values().filter(|x| x[0] <= 64.0).count(),
+                avg_reuse_distance.values().filter(|x| x[0] <= 128.0).count(),
+                avg_reuse_distance.values().filter(|x| x[0] <= 256.0).count(),
+                avg_reuse_distance.values().filter(|x| x[0] <= 512.0).count(),
+                avg_reuse_distance.values().filter(|x| x[0] <= 1024.0).count());
+            println!("Ele distance dist: entries: {} <=16: {} <=32: {} <=64: {} <=128: {} \
+                    <=256: {} <=512: {} <=1024: {} <=4096: {}",
+                avg_reuse_distance.len(),
+                avg_reuse_distance.values().filter(|x| x[1] <= 16.0).count(),
+                avg_reuse_distance.values().filter(|x| x[1] <= 32.0).count(),
+                avg_reuse_distance.values().filter(|x| x[1] <= 64.0).count(),
+                avg_reuse_distance.values().filter(|x| x[1] <= 128.0).count(),
+                avg_reuse_distance.values().filter(|x| x[1] <= 256.0).count(),
+                avg_reuse_distance.values().filter(|x| x[1] <= 512.0).count(),
+                avg_reuse_distance.values().filter(|x| x[1] <= 1024.0).count(),
+                avg_reuse_distance.values().filter(|x| x[1] <= 4096.0).count());
+            println!("Affinity dist: entries: {} >=128: {} >=64: {} >=16: {} >=4: {}",
+                affinity_collect.len(),
+                affinity_collect.values().filter(|&x| *x >= 128).count(),
+                affinity_collect.values().filter(|&x| *x >= 64).count(),
+                affinity_collect.values().filter(|&x| *x >= 16).count(),
+                affinity_collect.values().filter(|&x| *x >= 4).count());
+            println!("Nonzero entries: {}", b_reuse_counter.b_mem.get_nonzero());
             println!("Oracle fetch: {}", oracle_fetch.len());
             println!("Cache restricted fetch: {}", cache_restricted_collect.values().sum::<usize>());
             println!("{} blocked fetch: {}", block_num, blocked_fetch.values().sum::<usize>());

@@ -1,4 +1,4 @@
-use std::{cmp::min, collections::{HashMap, VecDeque}, hash::Hash};
+use std::{cmp::{min, max}, collections::{HashMap, VecDeque}, hash::Hash};
 
 use itertools::any;
 use sprs::vec;
@@ -72,8 +72,8 @@ impl LRUCacheSimu {
 }
 
 pub struct BReuseCounter<'a> {
-    a_mem: &'a mut CsrMatStorage,
-    b_mem: &'a mut CsrMatStorage,
+    pub a_mem: &'a mut CsrMatStorage,
+    pub b_mem: &'a mut CsrMatStorage,
     cache_size: usize,
     word_byte: usize,
 }
@@ -104,6 +104,7 @@ impl<'a> BReuseCounter<'a> {
                 *collect.entry(*colptr).or_insert(0) += 1;
             }
         }
+        println!("");
 
         return collect;
     }
@@ -118,16 +119,23 @@ impl<'a> BReuseCounter<'a> {
             let s = self.a_mem.indptr[i];
             let t = self.a_mem.indptr[i+1];
             for colidx in self.a_mem.indices[s..t].iter() {
-                let size = self.b_mem.indptr[*colidx+1] - self.b_mem.indptr[*colidx];
+                let size = 2 * (self.b_mem.indptr[*colidx+1] - self.b_mem.indptr[*colidx]);
                 if cache.rowmap.contains_key(colidx) {
                     cache.read(*colidx);
+                    // print!("h{} ", collect.values().sum::<usize>());
                     print!("h ");
                 } else {
                     cache.write(*colidx, size);
-                    *collect.entry(*colidx).or_insert(0) += 1;
+                    // Scheme 1: Only stat on A column index number.
+                    // *collect.entry(*colidx).or_insert(0) += 1;
+
+                    // Scheme 2: Stat B row size.
+                    *collect.entry(*colidx).or_insert(0) += size;
+                    // print!("m{} ", collect.values().sum::<usize>());
                     print!("m ");
                 }
             }
+            println!("");
         }
 
         return collect;
@@ -149,26 +157,30 @@ impl<'a> BReuseCounter<'a> {
             loop {
                 let mut finished = true;
                 for rowidx in i..min(i+row_num, self.a_mem.get_row_len()) {
-                // for offset in 0..min(row_num, self.a_mem.get_row_len()) {
                     print!("{} ", rowidx);
                     let colidx = ss[rowidx - i] + coloffset;
                     if colidx >= st[rowidx - i] { continue; }
                     let colptr = self.a_mem.indices[colidx];
                     finished = false;
-                    let size = self.b_mem.indptr[colptr+1] - self.b_mem.indptr[colptr];
+                    let size = 2 * (self.b_mem.indptr[colptr+1] - self.b_mem.indptr[colptr]);
                     if cache.rowmap.contains_key(&colptr) {
                         cache.read(colptr);
+                        // print!("h{} ", collect.values().sum::<usize>());
                         print!("h ");
                     } else {
                         cache.write(colptr, size);
-                        *collect.entry(colptr).or_insert(0) += 1;
+                        // Scheme 1: Only stat on A column index number.
+                        // *collect.entry(colptr).or_insert(0) += 1;
+                        // Scheme 2: Stat B row size.
+                        *collect.entry(colptr).or_insert(0) += size;
+                        // print!("m{} ", collect.values().sum::<usize>());
                         print!("m ");
                     }
                 }
+                println!("");
                 if finished { break; }
                 coloffset += 1;
             }
-            println!("");
         }
 
         return collect;
@@ -211,5 +223,31 @@ impl<'a> BReuseCounter<'a> {
         return collect;
     }
 
+    pub fn neighbor_row_affinity(&mut self) -> HashMap<usize, usize> {
+        println!("neighbor_row_affinity");
+        let neighbor_num = self.cache_size / self.word_byte / 2;
+        let neighbor_row = neighbor_num / (self.a_mem.get_nonzero() / self.a_mem.get_row_len());
+        let mut collect: HashMap<usize, usize> = HashMap::new();
+        for i in 0..self.a_mem.get_row_len() {
+            let s = self.a_mem.indptr[i];
+            let t = self.a_mem.indptr[i+1];
+            for col in self.a_mem.indices[s..t].iter() {
+                let mut founded = false;
+                for j in max(0, i as i32 - neighbor_row as i32) as usize ..i {
+                    let s = self.a_mem.indptr[j];
+                    let t = self.a_mem.indptr[j+1];
+                    for colptr in self.a_mem.indices[s..t].iter() {
+                        if *colptr == *col {
+                            *collect.entry(i).or_insert(0) += 1;
+                            founded = true;
+                            break;
+                        }
+                    }
+                    if founded { break; }
+                }
+            }
+        }
 
+        return collect;
+    }
 }
