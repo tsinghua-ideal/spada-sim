@@ -2,6 +2,7 @@ use fmt::write;
 use itertools::{Itertools, izip};
 use pyo3::ffi::PyCodec_StrictErrors;
 use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, fmt, hash::Hash, mem, ops::Index, usize};
+use rand::Rng;
 use crate::gemm::GEMM;
 
 #[derive(Debug, Clone)]
@@ -734,4 +735,470 @@ struct CacheSnapshot {
     pub b_occp: usize,
     pub psum_occp: usize,
     pub rowmap_inc: Vec<(usize, Option<CsrRow>)>,
+}
+
+pub struct RandomCache<'a> {
+    pub cache_size: usize,
+    pub word_byte: usize,
+    pub capability: usize,
+    pub cur_num: usize,
+    pub read_count: usize,
+    pub write_count: usize,
+    pub rowmap: HashMap<usize, CsrRow>,
+    pub output_base_addr: usize,
+    pub b_mem: &'a mut CsrMatStorage,
+    pub psum_mem: &'a mut VectorStorage,
+    pub miss_count: usize,
+    pub b_evict_count: usize,
+    pub psum_evict_count: usize,
+    pub b_occp: usize,
+    pub psum_occp: usize,
+    pub track_count: bool,
+}
+
+impl<'a> RandomCache<'a> {
+
+    pub fn new(
+        cache_size: usize,
+        word_byte: usize,
+        output_base_addr: usize,
+        b_mem: &'a mut CsrMatStorage,
+        psum_mem: &'a mut VectorStorage,
+    ) -> RandomCache<'a> {
+        RandomCache {
+            cache_size: cache_size,
+            word_byte: word_byte,
+            capability: cache_size / word_byte,
+            cur_num: 0,
+            read_count: 0,
+            write_count: 0,
+            rowmap: HashMap::new(),
+            output_base_addr: output_base_addr,
+            b_mem: b_mem,
+            psum_mem: psum_mem,
+            miss_count: 0,
+            b_evict_count: 0,
+            psum_evict_count: 0,
+            b_occp: 0,
+            psum_occp: 0,
+            track_count: true,
+        }
+    }
+
+    fn rowmap_insert(&mut self, rowptr: usize, csrrow: CsrRow) {
+        self.rowmap.insert(rowptr, csrrow);
+    }
+
+    fn rowmap_remove(&mut self, rowid: &usize) -> Option<CsrRow> {
+        self.rowmap.remove(rowid)
+    }
+
+    pub fn write(&mut self, csrrow: CsrRow) {
+        let row_size = csrrow.size();
+        // println!("*cache write invoked with count {} row {}", self.write_count, row_size);
+        if self.is_psum_row(csrrow.rowptr) {
+            self.psum_occp += row_size;
+        } else {
+            self.b_occp += row_size;
+        }
+
+        if self.cur_num + row_size <= self.capability {
+            self.cur_num += row_size;
+            if self.track_count { self.write_count += row_size; }
+            self.rowmap_insert(csrrow.rowptr, csrrow);
+        } else {
+            if let Err(err) = self.freeup_space(row_size) {
+                panic!("{}", err);
+            }
+            self.cur_num += row_size;
+            if self.track_count { self.write_count += row_size; }
+            self.rowmap_insert(csrrow.rowptr, csrrow);
+        }
+    }
+
+    pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
+        while self.rowmap.len() > 0 && (self.cur_num + space_required > self.capability) {
+
+            // Randomly kick out an element.
+            let mut popid = 0;
+            for _ in 0..3 {
+                let random_pos: usize = rand::thread_rng().gen_range(0..self.rowmap.len());
+                popid = *self.rowmap.keys().nth(random_pos).unwrap();
+                if !self.is_psum_row(popid) { break; }
+            }
+
+            let popped_csrrow = self.rowmap_remove(&popid).unwrap();
+            let evict_size = popped_csrrow.size();
+            println!("*freerow {} and get {}", popid, evict_size);
+            self.cur_num -= evict_size;
+
+            if self.is_psum_row(popid) {
+                if self.track_count { self.psum_evict_count += popped_csrrow.size(); }
+                self.psum_occp -= popped_csrrow.size();
+                self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
+            } else {
+                self.b_occp -= evict_size;
+                if self.track_count { self.b_evict_count += evict_size; }
+            }
+        }
+        if self.cur_num + space_required > self.capability {
+            return Err(format!(
+                "freeup_space: Not enough space for {}",
+                space_required
+            ));
+        } else {
+            return Ok(());
+        }
+    }
+
+    pub fn freeup_row(&mut self, rowid: usize) -> Result<CsrRow, String> {
+        if self.rowmap.contains_key(&rowid) {
+            let removed_row = self.rowmap_remove(&rowid).unwrap();
+            self.cur_num -= removed_row.size();
+            if self.is_psum_row(rowid) {
+                self.psum_occp -= removed_row.size();
+            } else {
+                self.b_occp -= removed_row.size();
+            }
+            return Ok(removed_row);
+        } else {
+            return Err(format!("freeup_row: row {} not found", rowid));
+        }
+    }
+
+    pub fn read_cache(&mut self, rowid: usize) -> Option<CsrRow> {
+        if self.rowmap.contains_key(&rowid) {
+            let csrrow = self.rowmap.get(&rowid).unwrap().clone();
+            if self.track_count { self.read_count += csrrow.size(); }
+            return Some(csrrow);
+        } else {
+            return None;
+        }
+    }
+
+    pub fn consume(&mut self, rowid: usize) -> Option<CsrRow> {
+        match self.freeup_row(rowid) {
+            Ok(csrrow) => {
+                self.read_count += csrrow.size();
+                Some(csrrow)
+            }
+            Err(_) => {
+                if self.is_psum_row(rowid) {
+                    match self.psum_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    match self.b_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn read(&mut self, rowid: usize) -> Option<CsrRow> {
+        match self.read_cache(rowid) {
+            Some(csrrow) => {
+                // if self.track_count { self.read_count += csrrow.size(); }
+                Some(csrrow)
+            }
+            None => {
+                if self.is_psum_row(rowid) {
+                    match self.psum_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            self.write(csrrow.clone());
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    match self.b_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            self.write(csrrow.clone());
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn swapout(&mut self, rowid: usize) {
+        if self.rowmap.contains_key(&rowid) {
+            let popped_csrrow = self.rowmap_remove(&rowid).unwrap();
+            self.cur_num -= popped_csrrow.size();
+            if self.is_psum_row(rowid) {
+                self.psum_occp -= popped_csrrow.size();
+            } else {
+                self.b_occp -= popped_csrrow.size();
+            }
+            self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
+        }
+    }
+
+    pub fn is_psum_row(&self, rowid: usize) -> bool {
+        return rowid >= self.output_base_addr;
+    }
+}
+
+pub struct LRURandomCache<'a> {
+    pub cache_size: usize,
+    pub word_byte: usize,
+    pub capability: usize,
+    pub cur_num: usize,
+    pub read_count: usize,
+    pub write_count: usize,
+    pub rowmap: HashMap<usize, CsrRow>,
+    pub lru_queue: VecDeque<usize>,
+    pub output_base_addr: usize,
+    pub b_mem: &'a mut CsrMatStorage,
+    pub psum_mem: &'a mut VectorStorage,
+    pub miss_count: usize,
+    pub b_evict_count: usize,
+    pub psum_evict_count: usize,
+    pub b_occp: usize,
+    pub psum_occp: usize,
+    pub track_count: bool,
+    pub random_window: usize,
+}
+
+impl<'a> LRURandomCache<'a> {
+    pub fn new(
+        cache_size: usize,
+        word_byte: usize,
+        output_base_addr: usize,
+        random_window: usize,
+        b_mem: &'a mut CsrMatStorage,
+        psum_mem: &'a mut VectorStorage,
+    ) -> LRURandomCache<'a> {
+        LRURandomCache {
+            cache_size: cache_size,
+            word_byte: word_byte,
+            capability: cache_size / word_byte,
+            cur_num: 0,
+            read_count: 0,
+            write_count: 0,
+            rowmap: HashMap::new(),
+            lru_queue: VecDeque::new(),
+            output_base_addr: output_base_addr,
+            b_mem: b_mem,
+            psum_mem: psum_mem,
+            miss_count: 0,
+            b_evict_count: 0,
+            psum_evict_count: 0,
+            b_occp: 0,
+            psum_occp: 0,
+            track_count: true,
+            random_window: random_window,
+        }
+    }
+
+    fn rowmap_insert(&mut self, rowptr: usize, csrrow: CsrRow) {
+        self.rowmap.insert(rowptr, csrrow);
+    }
+
+    fn rowmap_remove(&mut self, rowid: &usize) -> Option<CsrRow> {
+        self.rowmap.remove(rowid)
+    }
+
+    pub fn write(&mut self, csrrow: CsrRow) {
+        let row_size = csrrow.size();
+        // println!("*cache write invoked with count {} row {}", self.write_count, row_size);
+        if self.is_psum_row(csrrow.rowptr) {
+            self.psum_occp += row_size;
+        } else {
+            self.b_occp += row_size;
+        }
+
+        if self.cur_num + row_size <= self.capability {
+            self.cur_num += row_size;
+            self.lru_queue.push_back(csrrow.rowptr);
+            if self.track_count { self.write_count += row_size; }
+            self.rowmap_insert(csrrow.rowptr, csrrow);
+        } else {
+            if let Err(err) = self.freeup_space(row_size) {
+                panic!("{}", err);
+            }
+            self.cur_num += row_size;
+            self.lru_queue.push_back(csrrow.rowptr);
+            if self.track_count { self.write_count += row_size; }
+            self.rowmap_insert(csrrow.rowptr, csrrow);
+        }
+    }
+
+    pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
+        while self.lru_queue.len() > 0 && (self.cur_num + space_required > self.capability) {
+            let mut popid: usize;
+            loop {
+                let random_pos: usize = rand::thread_rng().gen_range(0..min(self.random_window, self.lru_queue.len()));
+                popid = self.lru_queue.remove(random_pos).unwrap();
+                if self.rowmap.contains_key(&popid) {
+                    break;
+                }
+            }
+            if self.is_psum_row(popid) {
+                let popped_csrrow = self.rowmap_remove(&popid).unwrap();
+                println!("*freerow {} and get {}", popid, popped_csrrow.size());
+                self.cur_num -= popped_csrrow.size();
+                if self.track_count { self.psum_evict_count += popped_csrrow.size(); }
+                self.psum_occp -= popped_csrrow.size();
+                self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
+            } else {
+                let evict_size = self.rowmap_remove(&popid).unwrap().size();
+                println!("*freerow {} and get {}", popid, evict_size);
+                self.cur_num -= evict_size;
+                self.b_occp -= evict_size;
+                if self.track_count { self.b_evict_count += evict_size; }
+            }
+        }
+        if self.cur_num + space_required > self.capability {
+            return Err(format!(
+                "freeup_space: Not enough space for {}",
+                space_required
+            ));
+        } else {
+            return Ok(());
+        }
+    }
+
+    pub fn freeup_row(&mut self, rowid: usize) -> Result<CsrRow, String> {
+        if self.rowmap.contains_key(&rowid) {
+            let removed_row = self.rowmap_remove(&rowid).unwrap();
+            self.cur_num -= removed_row.size();
+            if self.is_psum_row(rowid) {
+                self.psum_occp -= removed_row.size();
+            } else {
+                self.b_occp -= removed_row.size();
+            }
+            return Ok(removed_row);
+        } else {
+            return Err(format!("freeup_row: row {} not found", rowid));
+        }
+    }
+
+    pub fn read_cache(&mut self, rowid: usize) -> Option<CsrRow> {
+        if self.rowmap.contains_key(&rowid) {
+            // self.lru_queue
+            //     .remove(self.lru_queue.iter().position(|&x| x == rowid).unwrap());
+            if let Some(pos) = self.lru_queue.iter().position(|&x| x == rowid) {
+                self.lru_queue.remove(pos);
+            }
+            self.lru_queue.push_back(rowid);
+            let csrrow = self.rowmap.get(&rowid).unwrap().clone();
+            if self.track_count { self.read_count += csrrow.size(); }
+            return Some(csrrow);
+        } else {
+            return None;
+        }
+    }
+
+    pub fn consume(&mut self, rowid: usize) -> Option<CsrRow> {
+        match self.freeup_row(rowid) {
+            Ok(csrrow) => {
+                self.read_count += csrrow.size();
+                Some(csrrow)
+            }
+            Err(_) => {
+                if self.is_psum_row(rowid) {
+                    match self.psum_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    match self.b_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn read(&mut self, rowid: usize) -> Option<CsrRow> {
+        match self.read_cache(rowid) {
+            Some(csrrow) => {
+                // if self.track_count { self.read_count += csrrow.size(); }
+                Some(csrrow)
+            }
+            None => {
+                if self.is_psum_row(rowid) {
+                    match self.psum_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            self.write(csrrow.clone());
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    match self.b_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            self.write(csrrow.clone());
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn swapout(&mut self, rowid: usize) {
+        if self.rowmap.contains_key(&rowid) {
+            let popped_csrrow = self.rowmap_remove(&rowid).unwrap();
+            self.cur_num -= popped_csrrow.size();
+            if self.is_psum_row(rowid) {
+                self.psum_occp -= popped_csrrow.size();
+            } else {
+                self.b_occp -= popped_csrrow.size();
+            }
+            self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
+        }
+    }
+
+    pub fn is_psum_row(&self, rowid: usize) -> bool {
+        return rowid >= self.output_base_addr;
+    }
 }

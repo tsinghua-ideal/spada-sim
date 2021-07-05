@@ -6,12 +6,12 @@ use std::{
 };
 
 use itertools::{izip, merge, merge_join_by, Itertools, Merge, MergeJoinBy};
-use storage::{LRUCache, VectorStorage};
+use storage::{LRUCache, VectorStorage, RandomCache, LRURandomCache};
 
 use crate::frontend::Accelerator;
 use crate::{
     print_type_of,
-    storage::{self, CsrMatStorage, CsrRow, StorageAPI, StorageError},
+    storage::{self, CsrMatStorage, CsrRow, StorageAPI},
 };
 
 #[derive(Debug, Clone)]
@@ -175,7 +175,7 @@ pub struct TrafficModel<'a> {
     reduction_window: [usize; 2],
     pe_num: usize,
     lane_num: usize,
-    fiber_cache: LRUCache<'a>,
+    fiber_cache: LRURandomCache<'a>,
     pes: Vec<PE>,
     a_mem: &'a mut CsrMatStorage,
     merge_queue: Vec<usize>,
@@ -216,7 +216,8 @@ impl<'a> TrafficModel<'a> {
             reduction_window: default_reduction_window.clone(),
             pe_num: pe_num,
             lane_num: lane_num,
-            fiber_cache: LRUCache::new(cache_size, word_byte, output_base_addr, b_mem, psum_mem),
+            fiber_cache: LRURandomCache::new(cache_size, word_byte, output_base_addr, lane_num * a_mem.get_nonzero() / a_mem.get_row_len(),
+                b_mem, psum_mem),
             pes: vec![
                 PE {
                     reduction_window: default_reduction_window.clone(),
