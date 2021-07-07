@@ -1,7 +1,8 @@
 use fmt::write;
 use itertools::{Itertools, izip};
+use priority_queue::PriorityQueue;
 use pyo3::ffi::PyCodec_StrictErrors;
-use std::{cmp::{max, min}, collections::{HashMap, VecDeque}, fmt, hash::Hash, mem, ops::Index, usize};
+use std::{cmp::{Reverse, max, min}, collections::{HashMap, VecDeque, BinaryHeap}, fmt, hash::Hash, mem, ops::Index, usize};
 use rand::Rng;
 use crate::gemm::GEMM;
 
@@ -1176,6 +1177,259 @@ impl<'a> LRURandomCache<'a> {
                                 self.miss_count += csrrow.size();
                             }
                             self.write(csrrow.clone());
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn swapout(&mut self, rowid: usize) {
+        if self.rowmap.contains_key(&rowid) {
+            let popped_csrrow = self.rowmap_remove(&rowid).unwrap();
+            self.cur_num -= popped_csrrow.size();
+            if self.is_psum_row(rowid) {
+                self.psum_occp -= popped_csrrow.size();
+            } else {
+                self.b_occp -= popped_csrrow.size();
+            }
+            self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
+        }
+    }
+
+    pub fn is_psum_row(&self, rowid: usize) -> bool {
+        return rowid >= self.output_base_addr;
+    }
+}
+
+pub struct PriorityCache<'a> {
+    pub cache_size: usize,
+    pub word_byte: usize,
+    pub capability: usize,
+    pub cur_num: usize,
+    pub read_count: usize,
+    pub write_count: usize,
+    pub rowmap: HashMap<usize, CsrRow>,
+    pub priority_queue: BinaryHeap<Reverse<[usize; 2]>>,
+    pub valid_pq_row_dict: HashMap<usize, usize>,
+    pub output_base_addr: usize,
+    pub b_mem: &'a mut CsrMatStorage,
+    pub psum_mem: &'a mut VectorStorage,
+    pub miss_count: usize,
+    pub b_evict_count: usize,
+    pub psum_evict_count: usize,
+    pub b_occp: usize,
+    pub psum_occp: usize,
+    pub track_count: bool,
+    pub random_window: usize,
+}
+
+impl<'a> PriorityCache<'a> {
+    pub fn new(
+        cache_size: usize,
+        word_byte: usize,
+        output_base_addr: usize,
+        random_window: usize,
+        b_mem: &'a mut CsrMatStorage,
+        psum_mem: &'a mut VectorStorage,
+    ) -> PriorityCache<'a> {
+        PriorityCache {
+            cache_size: cache_size,
+            word_byte: word_byte,
+            capability: cache_size / word_byte,
+            cur_num: 0,
+            read_count: 0,
+            write_count: 0,
+            rowmap: HashMap::new(),
+            priority_queue: BinaryHeap::new(),
+            valid_pq_row_dict: HashMap::new(),
+            output_base_addr: output_base_addr,
+            b_mem: b_mem,
+            psum_mem: psum_mem,
+            miss_count: 0,
+            b_evict_count: 0,
+            psum_evict_count: 0,
+            b_occp: 0,
+            psum_occp: 0,
+            track_count: true,
+            random_window: random_window,
+        }
+    }
+
+    fn rowmap_insert(&mut self, rowptr: usize, csrrow: CsrRow) {
+        self.rowmap.insert(rowptr, csrrow);
+    }
+
+    fn rowmap_remove(&mut self, rowptr: &usize) -> Option<CsrRow> {
+        self.rowmap.remove(rowptr)
+    }
+
+    fn priority_queue_push(&mut self, a_loc: [usize; 2]) {
+        self.priority_queue.push(Reverse(a_loc));
+    }
+
+    fn priority_queue_pop(&mut self) -> Option<[usize; 2]> {
+        self.priority_queue.pop().map(|s|s.0)
+    }
+
+    pub fn write(&mut self, csrrow: CsrRow, a_loc: [usize; 2]) {
+        let row_size = csrrow.size();
+        // println!("*cache write invoked with count {} row {}", self.write_count, row_size);
+        if self.is_psum_row(csrrow.rowptr) {
+            self.psum_occp += row_size;
+        } else {
+            self.b_occp += row_size;
+        }
+
+        if self.cur_num + row_size <= self.capability {
+            self.cur_num += row_size;
+            self.valid_pq_row_dict.entry(a_loc[1])
+            .and_modify(|x| *x = max(*x, a_loc[0]))
+            .or_insert(a_loc[0]);
+            self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
+            if self.track_count { self.write_count += row_size; }
+            self.rowmap_insert(a_loc[1], csrrow);
+        } else {
+            if let Err(err) = self.freeup_space(row_size) {
+                panic!("{}", err);
+            }
+            self.cur_num += row_size;
+            self.valid_pq_row_dict.entry(a_loc[1])
+                .and_modify(|x| *x = max(*x, a_loc[0]))
+                .or_insert(a_loc[0]);
+            self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
+            if self.track_count { self.write_count += row_size; }
+            self.rowmap_insert(a_loc[1], csrrow);
+        }
+    }
+
+    pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
+        while self.priority_queue.len() > 0 && (self.cur_num + space_required > self.capability) {
+            println!("freeup_space: space_required: {}", space_required);
+            let mut popid: [usize; 2];
+            loop {
+                popid = self.priority_queue_pop().unwrap();
+                println!("freeup_space: popid: {:?}", popid);
+                if self.valid_pq_row_dict[&popid[1]] == popid[0] && self.rowmap.contains_key(&popid[1]) {
+                    break;
+                }
+            }
+            if self.is_psum_row(popid[1]) {
+                let popped_csrrow = self.rowmap_remove(&popid[1]).unwrap();
+                println!("*freerow {:?} and get {}", popid, popped_csrrow.size());
+                self.cur_num -= popped_csrrow.size();
+                if self.track_count { self.psum_evict_count += popped_csrrow.size(); }
+                self.psum_occp -= popped_csrrow.size();
+                self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
+            } else {
+                let evict_size = self.rowmap_remove(&popid[1]).unwrap().size();
+                println!("*freerow {:?} and get {}", popid, evict_size);
+                self.cur_num -= evict_size;
+                self.b_occp -= evict_size;
+                if self.track_count { self.b_evict_count += evict_size; }
+            }
+        }
+        if self.cur_num + space_required > self.capability {
+            return Err(format!(
+                "freeup_space: Not enough space for {}",
+                space_required
+            ));
+        } else {
+            return Ok(());
+        }
+    }
+
+    pub fn freeup_row(&mut self, popid: usize) -> Result<CsrRow, String> {
+        if self.rowmap.contains_key(&popid) {
+            let removed_row = self.rowmap_remove(&popid).unwrap();
+            self.cur_num -= removed_row.size();
+            if self.is_psum_row(popid) {
+                self.psum_occp -= removed_row.size();
+            } else {
+                self.b_occp -= removed_row.size();
+            }
+            return Ok(removed_row);
+        } else {
+            return Err(format!("freeup_row: row {} not found", popid));
+        }
+    }
+
+    pub fn read_cache(&mut self, a_loc: [usize; 2]) -> Option<CsrRow> {
+        if self.rowmap.contains_key(&a_loc[1]) {
+            self.valid_pq_row_dict.entry(a_loc[1])
+                .and_modify(|x| *x = max(*x, a_loc[0]))
+                .or_insert(a_loc[0]);
+            self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
+            let csrrow = self.rowmap.get(&a_loc[1]).unwrap().clone();
+            if self.track_count { self.read_count += csrrow.size(); }
+            return Some(csrrow);
+        } else {
+            return None;
+        }
+    }
+
+    pub fn consume(&mut self, rowid: usize) -> Option<CsrRow> {
+        match self.freeup_row(rowid) {
+            Ok(csrrow) => {
+                self.read_count += csrrow.size();
+                Some(csrrow)
+            }
+            Err(_) => {
+                if self.is_psum_row(rowid) {
+                    match self.psum_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    match self.b_mem.read_row(rowid) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn read(&mut self, a_loc: [usize; 2]) -> Option<CsrRow> {
+        match self.read_cache(a_loc.clone()) {
+            Some(csrrow) => {
+                Some(csrrow)
+            }
+            None => {
+                if self.is_psum_row(a_loc[1]) {
+                    match self.psum_mem.read_row(a_loc[1]) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            self.write(csrrow.clone(), a_loc);
+                            Some(csrrow)
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    match self.b_mem.read_row(a_loc[1]) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            self.write(csrrow.clone(), a_loc);
                             Some(csrrow)
                         }
                         Err(_) => None,

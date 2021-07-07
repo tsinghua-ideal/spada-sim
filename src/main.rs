@@ -9,6 +9,7 @@ mod storage_traffic_model;
 mod util;
 mod oracle_storage_traffic_model;
 mod b_reuse_counter;
+mod pqcache_storage_traffic_model;
 
 use std::cmp::min;
 
@@ -94,19 +95,19 @@ fn main() {
             // Oracle execution: to use the optimal reduction window shape.
             let oracle_exec = true;
 
-            let mut traffic_model = storage_traffic_model::TrafficModel::new(
-                omega_config.pe_num,
-                omega_config.lane_num,
-                omega_config.cache_size,
-                omega_config.word_byte,
-                output_base_addr,
-                default_reduction_window,
-                default_block_shape,
-                &mut dram_a,
-                &mut dram_b,
-                &mut dram_psum,
-                cli.accelerator.clone(),
-            );
+            // let mut traffic_model = storage_traffic_model::TrafficModel::new(
+            //     omega_config.pe_num,
+            //     omega_config.lane_num,
+            //     omega_config.cache_size,
+            //     omega_config.word_byte,
+            //     output_base_addr,
+            //     default_reduction_window,
+            //     default_block_shape,
+            //     &mut dram_a,
+            //     &mut dram_b,
+            //     &mut dram_psum,
+            //     cli.accelerator.clone(),
+            // );
 
             // let mut traffic_model = oracle_storage_traffic_model::TrafficModel::new(
             //         omega_config.pe_num,
@@ -122,6 +123,20 @@ fn main() {
             //         cli.accelerator.clone(),
             //         oracle_exec,
             // );
+
+            let mut traffic_model = pqcache_storage_traffic_model::TrafficModel::new(
+                omega_config.pe_num,
+                omega_config.lane_num,
+                omega_config.cache_size,
+                omega_config.word_byte,
+                output_base_addr,
+                default_reduction_window,
+                default_block_shape,
+                &mut dram_a,
+                &mut dram_b,
+                &mut dram_psum,
+                cli.accelerator.clone(),
+            );
 
             traffic_model.execute();
 
