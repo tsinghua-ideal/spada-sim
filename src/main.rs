@@ -187,13 +187,14 @@ fn main() {
                 omega_config.cache_size,
                 omega_config.word_byte,
             );
-            let block_num = 4;
+            let block_num = 8;
             let b_row_len = b_reuse_counter.collect_row_length();
             let oracle_fetch = b_reuse_counter.oracle_fetch();
             let avg_reuse_distance = b_reuse_counter.reuse_row_distance();
             let cache_restricted_collect = b_reuse_counter.cached_fetch();
             let blocked_fetch = b_reuse_counter.blocked_fetch(block_num);
-            let affinity_collect = b_reuse_counter.neighbor_row_affinity();
+            // let affinity_collect = b_reuse_counter.neighbor_row_affinity();
+            let improved_reuse = b_reuse_counter.improved_reuse(block_num);
 
             println!("-----Result-----");
             println!("Row length dist: entries: {} >=256: {} >=180: {} >=128: {} >=90: {}",
@@ -253,16 +254,17 @@ fn main() {
                 avg_reuse_distance.values().filter(|x| x[1] <= 512.0).count(),
                 avg_reuse_distance.values().filter(|x| x[1] <= 1024.0).count(),
                 avg_reuse_distance.values().filter(|x| x[1] <= 4096.0).count());
-            println!("Affinity dist: entries: {} >=128: {} >=64: {} >=16: {} >=4: {}",
-                affinity_collect.len(),
-                affinity_collect.values().filter(|&x| *x >= 128).count(),
-                affinity_collect.values().filter(|&x| *x >= 64).count(),
-                affinity_collect.values().filter(|&x| *x >= 16).count(),
-                affinity_collect.values().filter(|&x| *x >= 4).count());
+            // println!("Affinity dist: entries: {} >=128: {} >=64: {} >=16: {} >=4: {}",
+            //     affinity_collect.len(),
+            //     affinity_collect.values().filter(|&x| *x >= 128).count(),
+            //     affinity_collect.values().filter(|&x| *x >= 64).count(),
+            //     affinity_collect.values().filter(|&x| *x >= 16).count(),
+            //     affinity_collect.values().filter(|&x| *x >= 4).count());
             println!("Nonzero entries: {}", b_reuse_counter.b_mem.get_nonzero());
             println!("Oracle fetch: {}", oracle_fetch.len());
             println!("Cache restricted fetch: {}", cache_restricted_collect.values().sum::<usize>());
             println!("{} blocked fetch: {}", block_num, blocked_fetch.values().sum::<usize>());
+            println!("Total reuse: {} improved reuse: {}, improved ratio: {:.2}", improved_reuse.0, improved_reuse.1, improved_reuse.2);
         }
 
         Simulator::AccurateSimu => {

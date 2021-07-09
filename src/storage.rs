@@ -1223,7 +1223,6 @@ pub struct PriorityCache<'a> {
     pub b_occp: usize,
     pub psum_occp: usize,
     pub track_count: bool,
-    pub random_window: usize,
 }
 
 impl<'a> PriorityCache<'a> {
@@ -1231,7 +1230,6 @@ impl<'a> PriorityCache<'a> {
         cache_size: usize,
         word_byte: usize,
         output_base_addr: usize,
-        random_window: usize,
         b_mem: &'a mut CsrMatStorage,
         psum_mem: &'a mut VectorStorage,
     ) -> PriorityCache<'a> {
@@ -1254,7 +1252,6 @@ impl<'a> PriorityCache<'a> {
             b_occp: 0,
             psum_occp: 0,
             track_count: true,
-            random_window: random_window,
         }
     }
 

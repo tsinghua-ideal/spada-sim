@@ -216,7 +216,7 @@ impl<'a> TrafficModel<'a> {
             reduction_window: default_reduction_window.clone(),
             pe_num: pe_num,
             lane_num: lane_num,
-            fiber_cache: PriorityCache::new(cache_size, word_byte, output_base_addr, lane_num * a_mem.get_nonzero() / a_mem.get_row_len(),
+            fiber_cache: PriorityCache::new(cache_size, word_byte, output_base_addr,
                 b_mem, psum_mem),
             pes: vec![
                 PE {
@@ -750,13 +750,6 @@ impl<'a> TrafficModel<'a> {
         let mut scaling_factors = vec![];
         let mut fibers = vec![];
         let mut rowidxs = vec![];
-
-        if pe.row_s == 15630 && pe.col_s == 414 {
-            for item in &self.fiber_cache.priority_queue {
-                print!("{:?} ", item);
-            }
-            println!("");
-        }
 
         if pe.merge_mode {
             let mut unused_lane_num = self.lane_num;

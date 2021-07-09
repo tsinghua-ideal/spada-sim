@@ -1,9 +1,9 @@
-use std::{cmp::{min, max}, collections::{HashMap, VecDeque}, hash::Hash};
+use std::{cmp::{Reverse, max, min}, collections::{BinaryHeap, HashMap, VecDeque}, hash::Hash};
 
 use itertools::any;
 use sprs::vec;
 
-use crate::storage::CsrMatStorage;
+use crate::storage::{CsrMatStorage, CsrRow, PriorityCache};
 
 struct LRUCacheSimu {
     pub cache_size: usize,
@@ -71,6 +71,103 @@ impl LRUCacheSimu {
     }
 }
 
+struct PriorityCacheSimu {
+    pub cache_size: usize,
+    pub word_byte: usize,
+    pub capability: usize,
+    pub cur_num: usize,
+    pub rowmap: HashMap<usize, usize>,
+    pub priority_queue: BinaryHeap<Reverse<[usize; 2]>>,
+    pub valid_pq_row_dict: HashMap<usize, usize>,
+}
+
+impl PriorityCacheSimu {
+    pub fn new(cache_size: usize, word_byte: usize) -> PriorityCacheSimu {
+        PriorityCacheSimu {
+            cache_size: cache_size,
+            word_byte: word_byte,
+            capability: cache_size / word_byte,
+            cur_num: 0,
+            rowmap: HashMap::new(),
+            priority_queue: BinaryHeap::new(),
+            valid_pq_row_dict: HashMap::new(),
+        }
+    }
+
+    fn rowmap_insert(&mut self, rowptr: usize, size: usize) {
+        self.rowmap.insert(rowptr, size);
+    }
+
+    fn rowmap_remove(&mut self, rowptr: &usize) -> Option<usize> {
+        self.rowmap.remove(rowptr)
+    }
+
+    fn priority_queue_push(&mut self, a_loc: [usize; 2]) {
+        self.priority_queue.push(Reverse(a_loc));
+    }
+
+    fn priority_queue_pop(&mut self) -> Option<[usize; 2]> {
+        self.priority_queue.pop().map(|s|s.0)
+    }
+
+    pub fn write(&mut self, a_loc: [usize; 2], size: usize) {
+        if self.cur_num + size <= self.capability {
+            self.cur_num += size;
+            self.valid_pq_row_dict.entry(a_loc[1])
+            .and_modify(|x| *x = max(*x, a_loc[0]))
+            .or_insert(a_loc[0]);
+            self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
+            self.rowmap_insert(a_loc[1], size);
+        } else {
+            if let Err(err) = self.freeup_space(size) {
+                panic!("{}", err);
+            }
+            self.cur_num += size;
+            self.valid_pq_row_dict.entry(a_loc[1])
+                .and_modify(|x| *x = max(*x, a_loc[0]))
+                .or_insert(a_loc[0]);
+            self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
+            self.rowmap_insert(a_loc[1], size);
+        }
+    }
+
+    pub fn freeup_space(&mut self, size: usize) -> Result<(), String> {
+        while self.priority_queue.len() > 0 && (self.cur_num + size > self.capability) {
+            let mut popid: [usize; 2];
+            loop {
+                popid = self.priority_queue_pop().unwrap();
+                println!("freeup_space: popid: {:?}", popid);
+                if self.valid_pq_row_dict[&popid[1]] == popid[0] && self.rowmap.contains_key(&popid[1]) {
+                    break;
+                }
+            }
+            let evict_size = self.rowmap_remove(&popid[1]).unwrap();
+            self.cur_num -= evict_size;
+        }
+        if self.cur_num + size > self.capability {
+            return Err(format!(
+                "freeup_space: Not enough space for {}",
+                size
+            ));
+        } else {
+            return Ok(());
+        }
+    }
+
+    pub fn read(&mut self, a_loc: [usize; 2]) -> Option<usize> {
+        if self.rowmap.contains_key(&a_loc[1]) {
+            self.valid_pq_row_dict.entry(a_loc[1])
+            .and_modify(|x| *x = max(*x, a_loc[0]))
+            .or_insert(a_loc[0]);
+            self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
+            let size = self.rowmap.get(&a_loc[1]).unwrap().clone();
+            return Some(size);
+        } else {
+            return None;
+        }
+    }
+}
+
 pub struct BReuseCounter<'a> {
     pub a_mem: &'a mut CsrMatStorage,
     pub b_mem: &'a mut CsrMatStorage,
@@ -113,7 +210,7 @@ impl<'a> BReuseCounter<'a> {
         // Assume a GAMMA like access pattern.
         println!("--cached_fetch");
         let mut collect = HashMap::new();
-        let mut cache = LRUCacheSimu::new(self.cache_size, 8);
+        let mut cache = PriorityCacheSimu::new(self.cache_size, 8);
         for i in 0..self.a_mem.get_row_len() {
             print!("{} ", i);
             let s = self.a_mem.indptr[i];
@@ -121,11 +218,11 @@ impl<'a> BReuseCounter<'a> {
             for colidx in self.a_mem.indices[s..t].iter() {
                 let size = 2 * (self.b_mem.indptr[*colidx+1] - self.b_mem.indptr[*colidx]);
                 if cache.rowmap.contains_key(colidx) {
-                    cache.read(*colidx);
+                    cache.read([i, *colidx]);
                     // print!("h{} ", collect.values().sum::<usize>());
                     print!("h ");
                 } else {
-                    cache.write(*colidx, size);
+                    cache.write([i, *colidx], size);
                     // Scheme 1: Only stat on A column index number.
                     // *collect.entry(*colidx).or_insert(0) += 1;
 
@@ -145,7 +242,7 @@ impl<'a> BReuseCounter<'a> {
         // Multi-row access pattern.
         println!("--blocked_fetch");
         let mut collect = HashMap::new();
-        let mut cache = LRUCacheSimu::new(self.cache_size, 8);
+        let mut cache = PriorityCacheSimu::new(self.cache_size, 8);
         for i in (0..self.a_mem.get_row_len()).step_by(row_num) {
             let mut ss = vec![];
             let mut st = vec![];
@@ -164,11 +261,11 @@ impl<'a> BReuseCounter<'a> {
                     finished = false;
                     let size = 2 * (self.b_mem.indptr[colptr+1] - self.b_mem.indptr[colptr]);
                     if cache.rowmap.contains_key(&colptr) {
-                        cache.read(colptr);
+                        cache.read([rowidx, colptr]);
                         // print!("h{} ", collect.values().sum::<usize>());
                         print!("h ");
                     } else {
-                        cache.write(colptr, size);
+                        cache.write([rowidx, colptr], size);
                         // Scheme 1: Only stat on A column index number.
                         // *collect.entry(colptr).or_insert(0) += 1;
                         // Scheme 2: Stat B row size.
@@ -214,6 +311,65 @@ impl<'a> BReuseCounter<'a> {
         return collect;
     }
 
+    pub fn collect_ip_reuse_distance(&mut self) -> HashMap<usize, Vec<usize>> {
+        let mut collect: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut prev_pos: HashMap<usize, usize> = HashMap::new();
+        let mut ele_counter: usize = 0;
+        for i in 0..self.a_mem.get_row_len() {
+            let s = self.a_mem.indptr[i];
+            let t = self.a_mem.indptr[i+1];
+            for colptr in self.a_mem.indices[s..t].iter() {
+                if prev_pos.contains_key(colptr) {
+                    let ele_dist = ele_counter - prev_pos[colptr];
+                    collect.entry(*colptr)
+                        .and_modify(|x| x.push(ele_dist))
+                        .or_insert(vec![ele_dist,]);
+                }
+                ele_counter += self.b_mem.indptr[*colptr+1] - self.b_mem.indptr[*colptr];
+                prev_pos.insert(*colptr, ele_counter);
+            }
+        }
+
+        return collect;
+    }
+
+    pub fn collect_omega_reuse_distance(&mut self, row_num: usize) -> HashMap<usize, Vec<usize>> {
+        let mut collect: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut prev_pos: HashMap<usize, usize> = HashMap::new();
+        let mut ele_counter: usize = 0;
+        for i in (0..self.a_mem.get_row_len()).step_by(row_num) {
+            let mut ss = vec![];
+            let mut st = vec![];
+            for rowidx in i..min(i+row_num, self.a_mem.get_row_len()) {
+                ss.push(self.a_mem.indptr[rowidx]);
+                st.push(self.a_mem.indptr[rowidx+1]);
+            }
+            let mut coloffset = 0;
+            loop {
+                let mut finished = true;
+                for rowidx in i..min(i+row_num, self.a_mem.get_row_len()) {
+                    let colidx = ss[rowidx - i] + coloffset;
+                    if colidx >= st[rowidx - i] { continue; }
+                    let colptr = self.a_mem.indices[colidx];
+                    finished = false;
+
+                    if prev_pos.contains_key(&colptr) {
+                        let ele_dist = ele_counter - prev_pos[&colptr];
+                        collect.entry(colptr)
+                            .and_modify(|x| x.push(ele_dist))
+                            .or_insert(vec![ele_dist,]);
+                    }
+                    ele_counter += self.b_mem.indptr[colptr+1] - self.b_mem.indptr[colptr];
+                    prev_pos.insert(colptr, ele_counter);
+                }
+                if finished { break; }
+                coloffset += 1;
+            }
+        }
+
+        return collect;
+    }
+
     pub fn collect_row_length(&mut self) -> HashMap<usize, usize> {
         let mut collect: HashMap<usize, usize> = HashMap::new();
         for i in 0..self.b_mem.get_row_len() {
@@ -249,5 +405,22 @@ impl<'a> BReuseCounter<'a> {
         }
 
         return collect;
+    }
+
+    pub fn improved_reuse(&mut self, row_num: usize) -> (usize, usize, f32) {
+        let mut improved_counter = 0;
+        let mut total_reuse_counter = 0;
+        let ip_dist = self.collect_ip_reuse_distance();
+        let omega_dist = self.collect_omega_reuse_distance(row_num);
+        for k in ip_dist.keys() {
+            for (ip_dist, o_dist) in ip_dist[k].iter().zip(omega_dist[k].iter()) {
+                total_reuse_counter += 1;
+                if *ip_dist >= self.cache_size && self.cache_size >= *o_dist {
+                    improved_counter += 1;
+                }
+            }
+        }
+
+        return (total_reuse_counter, improved_counter, improved_counter as f32 / total_reuse_counter as f32);
     }
 }
