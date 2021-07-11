@@ -3,7 +3,7 @@ use std::{cmp::{Reverse, max, min}, collections::{BinaryHeap, HashMap, VecDeque}
 use itertools::any;
 use sprs::vec;
 
-use crate::storage::{CsrMatStorage, CsrRow, PriorityCache};
+use crate::storage::{CsrMatStorage, CsrRow, PriorityCache, Snapshotable, OldValue};
 
 struct LRUCacheSimu {
     pub cache_size: usize,
@@ -71,7 +71,17 @@ impl LRUCacheSimu {
     }
 }
 
-struct PriorityCacheSimu {
+
+#[derive(Debug, Clone)]
+struct PriorityCacheSimuSnapshot {
+    pub cur_num: usize,
+    pub priority_queue: BinaryHeap<Reverse<[usize; 2]>>,
+    pub rowmap_inc: Vec<(usize, Option<usize>)>,
+    pub old_pq_row_track: Vec<OldValue>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PriorityCacheSimu {
     pub cache_size: usize,
     pub word_byte: usize,
     pub capability: usize,
@@ -79,6 +89,50 @@ struct PriorityCacheSimu {
     pub rowmap: HashMap<usize, usize>,
     pub priority_queue: BinaryHeap<Reverse<[usize; 2]>>,
     pub valid_pq_row_dict: HashMap<usize, usize>,
+    snapshot: Option<PriorityCacheSimuSnapshot>,
+}
+
+impl Snapshotable for PriorityCacheSimu {
+    fn take_snapshot(&mut self) {
+        self.snapshot = Some(PriorityCacheSimuSnapshot {
+            cur_num: self.cur_num,
+            priority_queue: self.priority_queue.clone(),
+            rowmap_inc: vec![],
+            old_pq_row_track: vec![],
+        });
+    }
+
+    fn drop_snapshot(&mut self) {
+        self.snapshot = None;
+    }
+
+    fn restore_from_snapshot(&mut self) {
+        match self.snapshot {
+            Some(ref mut snp) => {
+                // Restore rowmap from execution log.
+                for (rowid, size) in snp.rowmap_inc.drain(..) {
+                    if let Some(s) = size {
+                        self.rowmap.insert(rowid, s);
+                    } else {
+                        self.rowmap.remove(&rowid);
+                    }
+                }
+
+                // Restore valid_pq_row_dict from execution log.
+                for a_loc in snp.old_pq_row_track.iter() {
+                    match a_loc {
+                        OldValue::Update(x) => self.valid_pq_row_dict.insert(x[1], x[0]),
+                        OldValue::Insert(y) => self.valid_pq_row_dict.remove(y),
+                    };
+                }
+                self.cur_num = snp.cur_num;
+                self.priority_queue = snp.priority_queue.clone();
+            },
+            None => {
+                panic!("No snapshot to be restored!");
+            }
+        }
+    }
 }
 
 impl PriorityCacheSimu {
@@ -91,15 +145,25 @@ impl PriorityCacheSimu {
             rowmap: HashMap::new(),
             priority_queue: BinaryHeap::new(),
             valid_pq_row_dict: HashMap::new(),
+            snapshot: None,
         }
     }
 
     fn rowmap_insert(&mut self, rowptr: usize, size: usize) {
+        if let Some(ref mut snp) = self.snapshot {
+            snp.rowmap_inc.push((rowptr, None));
+        }
         self.rowmap.insert(rowptr, size);
     }
 
     fn rowmap_remove(&mut self, rowptr: &usize) -> Option<usize> {
-        self.rowmap.remove(rowptr)
+        let size = self.rowmap.remove(rowptr);
+        if let Some(ref mut snp) = self.snapshot {
+            if let Some(ref c) = size {
+                snp.rowmap_inc.push((*rowptr, Some(c.clone())));
+            }
+        }
+        size
     }
 
     fn priority_queue_push(&mut self, a_loc: [usize; 2]) {
@@ -111,24 +175,33 @@ impl PriorityCacheSimu {
     }
 
     pub fn write(&mut self, a_loc: [usize; 2], size: usize) {
+        // Freeup space first if necessary.
         if self.cur_num + size <= self.capability {
             self.cur_num += size;
-            self.valid_pq_row_dict.entry(a_loc[1])
-            .and_modify(|x| *x = max(*x, a_loc[0]))
-            .or_insert(a_loc[0]);
-            self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
-            self.rowmap_insert(a_loc[1], size);
         } else {
             if let Err(err) = self.freeup_space(size) {
                 panic!("{}", err);
             }
             self.cur_num += size;
-            self.valid_pq_row_dict.entry(a_loc[1])
-                .and_modify(|x| *x = max(*x, a_loc[0]))
-                .or_insert(a_loc[0]);
-            self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
-            self.rowmap_insert(a_loc[1], size);
         }
+
+        // Track snapshot.
+        if let Some(ref mut snp) = self.snapshot {
+            if self.valid_pq_row_dict.contains_key(&a_loc[1]) {
+                snp.old_pq_row_track.push(OldValue::Update(a_loc.clone()));
+            } else {
+                snp.old_pq_row_track.push(OldValue::Insert(a_loc[1]));
+            }
+        }
+
+        // Update priority status.
+        self.valid_pq_row_dict.entry(a_loc[1])
+            .and_modify(|x| *x = max(*x, a_loc[0]))
+            .or_insert(a_loc[0]);
+        self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
+
+        self.rowmap_insert(a_loc[1], size);
+
     }
 
     pub fn freeup_space(&mut self, size: usize) -> Result<(), String> {
@@ -136,7 +209,7 @@ impl PriorityCacheSimu {
             let mut popid: [usize; 2];
             loop {
                 popid = self.priority_queue_pop().unwrap();
-                println!("freeup_space: popid: {:?}", popid);
+                // println!("freeup_space: popid: {:?}", popid);
                 if self.valid_pq_row_dict[&popid[1]] == popid[0] && self.rowmap.contains_key(&popid[1]) {
                     break;
                 }
@@ -156,6 +229,15 @@ impl PriorityCacheSimu {
 
     pub fn read(&mut self, a_loc: [usize; 2]) -> Option<usize> {
         if self.rowmap.contains_key(&a_loc[1]) {
+            // Track snapshot.
+            if let Some(ref mut snp) = self.snapshot {
+                if self.valid_pq_row_dict.contains_key(&a_loc[1]) {
+                    snp.old_pq_row_track.push(OldValue::Update(a_loc.clone()));
+                } else {
+                    snp.old_pq_row_track.push(OldValue::Insert(a_loc[1]));
+                }
+            }
+
             self.valid_pq_row_dict.entry(a_loc[1])
             .and_modify(|x| *x = max(*x, a_loc[0]))
             .or_insert(a_loc[0]);
@@ -422,5 +504,113 @@ impl<'a> BReuseCounter<'a> {
         }
 
         return (total_reuse_counter, improved_counter, improved_counter as f32 / total_reuse_counter as f32);
+    }
+
+    pub fn oracle_blocked_fetch(&mut self) -> HashMap<usize, usize> {
+        println!("--oracle blocked fetch");
+        let mut collect: HashMap<usize,usize> = HashMap::new();
+        let mut cache = PriorityCacheSimu::new(self.cache_size, 8);
+
+        let mut result_track: HashMap<usize, (HashMap<usize, usize>, PriorityCacheSimu)> = HashMap::new();
+        let prev_result_offset = [1, 2, 4, 8];
+
+        // Execute for row 0.
+        self._exec(&mut collect, &mut cache, 0, 1);
+        cache.take_snapshot();
+        result_track.insert(0, (collect, cache));
+
+        for row_end in 1..self.a_mem.get_row_len() {
+            let mut min_b_fetch = usize::MAX;
+            let mut min_collect = None;
+            let mut min_cache = None;
+            let mut min_offset = 0;
+            println!("--Row: {}", row_end);
+
+            for offset in prev_result_offset.iter() {
+                // Prepare the base execution environment.
+                print!("offset {} ", offset);
+                if row_end < *offset { continue; }
+                let prev_result_idx = row_end - offset;
+                let (ref mut base_collect, ref mut base_cache) = result_track.get_mut(&prev_result_idx).unwrap();
+                let row_start = prev_result_idx + 1;
+
+                // Execute.
+                print!("Before exec fetch {}, ", base_collect.values().sum::<usize>());
+                let rev_collect_log = self._exec(base_collect, base_cache, row_start, row_end+1);
+                print!("collect log: {:?} ", &rev_collect_log);
+
+                // Update the dp tape if the scheme is better.
+                let cur_b_fetch = base_collect.values().sum::<usize>();
+                print!("After exec fetch {}, \t", cur_b_fetch);
+                if cur_b_fetch < min_b_fetch {
+                    min_collect = Some(base_collect.clone());
+                    min_cache = Some(base_cache.clone());
+                    min_b_fetch = cur_b_fetch;
+                    min_offset = *offset;
+                }
+
+                // Restore the base condition.
+                base_cache.restore_from_snapshot();
+                for rev_act in rev_collect_log.iter() {
+                    match rev_act {
+                        OldValue::Update(x) => base_collect.insert(x[0], x[1]),
+                        &OldValue::Insert(x) => base_collect.remove(&x),
+                    };
+                }
+            }
+
+            if min_cache.is_some() && min_collect.is_some() {
+                result_track.insert(row_end, (
+                    min_collect.unwrap(),
+                    min_cache.map(|mut x|{x.take_snapshot(); x}).unwrap()
+                ));
+            }
+
+            println!("\noracle offset: {}", min_offset);
+
+            result_track.retain(|k, _| *k + 8 >= max(row_end, 8));
+        }
+
+        return result_track.get(&(self.a_mem.get_row_len() - 1)).unwrap().0.clone();
+    }
+
+    pub fn _exec(&mut self, base_collect: &mut HashMap<usize, usize>, base_cache: &mut PriorityCacheSimu, row_s: usize, row_t: usize) -> Vec<OldValue> {
+        let mut old_collect_track = vec![];
+        let mut ss = vec![];
+        let mut st = vec![];
+        for i in row_s..row_t {
+            ss.push(self.a_mem.indptr[i]);
+            st.push(self.a_mem.indptr[i+1]);
+        }
+
+        let mut coloffset = 0;
+        loop {
+            let mut finished = true;
+            for rowidx in row_s..row_t {
+                // print!("{} " , rowidx);
+                let colidx = ss[rowidx - row_s] + coloffset;
+                if colidx >= st[rowidx - row_s] { continue; }
+                let colptr = self.a_mem.indices[colidx];
+                finished = false;
+                let size = 2 * (self.b_mem.indptr[colptr+1] - self.b_mem.indptr[colptr]);
+                if base_cache.rowmap.contains_key(&colptr) {
+                    base_cache.read([rowidx, colptr]);
+                } else {
+                    base_cache.write([rowidx, colptr], size);
+
+                    // Track old value to restore later.
+                    if base_collect.contains_key(&colptr) {
+                        old_collect_track.push(OldValue::Update([colptr, base_collect[&colptr]]));
+                    } else {
+                        old_collect_track.push(OldValue::Insert(colptr));
+                    }
+                    *base_collect.entry(colptr).or_insert(0) += size;
+                }
+            }
+            if finished { break; }
+            coloffset += 1;
+        }
+
+        return old_collect_track;
     }
 }

@@ -80,6 +80,44 @@ impl fmt::Display for CsrRow {
     }
 }
 
+struct LRUCacheSnapshot {
+    pub cur_num: usize,
+    pub read_count: usize,
+    pub write_count: usize,
+    pub rowmap: HashMap<usize, CsrRow>,
+    pub lru_queue: VecDeque<usize>,
+    pub output_base_addr: usize,
+    pub miss_count: usize,
+    pub b_evict_count: usize,
+    pub psum_evict_count: usize,
+    pub b_occp: usize,
+    pub psum_occp: usize,
+    pub rowmap_inc: Vec<(usize, Option<CsrRow>)>,
+}
+
+#[derive(Debug, Clone)]
+pub enum OldValue{
+    Update([usize; 2]),
+    Insert(usize),
+}
+
+struct PriorityCacheSnapshot {
+    pub cur_num: usize,
+    pub read_count: usize,
+    pub write_count: usize,
+    // pub rowmap: HashMap<usize, CsrRow>,
+    pub priority_queue: BinaryHeap<Reverse<[usize; 2]>>,
+    // pub valid_pq_row_dict: HashMap<usize, usize>,
+    pub output_base_addr: usize,
+    pub miss_count: usize,
+    pub b_evict_count: usize,
+    pub psum_evict_count: usize,
+    pub b_occp: usize,
+    pub psum_occp: usize,
+    pub rowmap_inc: Vec<(usize, Option<CsrRow>)>,
+    pub old_pq_row_track: Vec<OldValue>,
+}
+
 pub fn sorted_element_vec_to_csr_row(srt_ele_vec: Vec<Element>) -> CsrRow {
     let rowptr = srt_ele_vec[0].row_idx;
     let data = srt_ele_vec.iter().map(|e| e.value).collect::<Vec<f64>>();
@@ -388,13 +426,13 @@ pub struct LRUCache<'a> {
     pub b_occp: usize,
     pub psum_occp: usize,
     pub track_count: bool,
-    snapshot: Option<CacheSnapshot>,
+    snapshot: Option<LRUCacheSnapshot>,
 }
 
 impl<'a> Snapshotable for LRUCache<'a> {
     fn take_snapshot(&mut self) {
         // First dump cache's info, then each mem dump its own info.
-        self.snapshot = Some(CacheSnapshot {
+        self.snapshot = Some(LRUCacheSnapshot {
             cur_num: self.cur_num,
             read_count: self.read_count,
             write_count: self.write_count,
@@ -720,22 +758,8 @@ impl<'a> LRUCache<'a> {
         }
         self.b_mem.restore_from_snapshot();
         self.psum_mem.restore_from_snapshot();
+        self.drop_snapshot();
     }
-}
-
-struct CacheSnapshot {
-    pub cur_num: usize,
-    pub read_count: usize,
-    pub write_count: usize,
-    pub rowmap: HashMap<usize, CsrRow>,
-    pub lru_queue: VecDeque<usize>,
-    pub output_base_addr: usize,
-    pub miss_count: usize,
-    pub b_evict_count: usize,
-    pub psum_evict_count: usize,
-    pub b_occp: usize,
-    pub psum_occp: usize,
-    pub rowmap_inc: Vec<(usize, Option<CsrRow>)>,
 }
 
 pub struct RandomCache<'a> {
@@ -1223,6 +1247,76 @@ pub struct PriorityCache<'a> {
     pub b_occp: usize,
     pub psum_occp: usize,
     pub track_count: bool,
+    snapshot: Option<PriorityCacheSnapshot>,
+}
+
+impl<'a> Snapshotable for PriorityCache<'a> {
+    fn take_snapshot(&mut self) {
+        // First dump cache's info, then each mem dump its own info.
+        self.snapshot = Some(PriorityCacheSnapshot {
+            cur_num: self.cur_num,
+            read_count: self.read_count,
+            write_count: self.write_count,
+            // rowmap: self.rowmap.clone(),
+            priority_queue: self.priority_queue.clone(),
+            // valid_pq_row_dict: self.valid_pq_row_dict.clone(),
+            output_base_addr: self.output_base_addr,
+            miss_count: self.miss_count,
+            b_evict_count: self.b_evict_count,
+            psum_evict_count: self.psum_evict_count,
+            b_occp: self.b_occp,
+            psum_occp: self.psum_occp,
+            rowmap_inc: vec![],
+            old_pq_row_track: vec![],
+        });
+        self.b_mem.take_snapshot();
+        self.psum_mem.take_snapshot();
+    }
+
+    fn drop_snapshot(&mut self) {
+        self.snapshot = None;
+        self.b_mem.drop_snapshot();
+        self.psum_mem.drop_snapshot();
+    }
+
+    fn restore_from_snapshot(&mut self) {
+        match self.snapshot {
+            Some(ref mut snp) => {
+                // Restore rowmap from execution log.
+                for (rowid, csrrow) in snp.rowmap_inc.drain(..) {
+                    if let Some(c) = csrrow {
+                        self.rowmap.insert(rowid, c);
+                    } else {
+                        self.rowmap.remove(&rowid);
+                    }
+                }
+
+                // Restore valid_pq_row_dict from execution log.
+                for a_loc in snp.old_pq_row_track.iter() {
+                    match a_loc {
+                        OldValue::Update(x) => self.valid_pq_row_dict.insert(x[1], x[0]),
+                        OldValue::Insert(y) => self.valid_pq_row_dict.remove(y),
+                    };
+                }
+
+                self.cur_num = snp.cur_num;
+                self.read_count = snp.read_count;
+                self.write_count = snp.write_count;
+                self.priority_queue = snp.priority_queue.clone();
+                self.output_base_addr = snp.output_base_addr;
+                self.miss_count = snp.miss_count;
+                self.b_evict_count = snp.b_evict_count;
+                self.psum_evict_count = snp.psum_evict_count;
+                self.b_occp = snp.b_occp;
+                self.psum_occp = snp.psum_occp;
+            },
+            None => {
+                panic!("No snapshot to be restored!");
+            }
+        }
+        self.b_mem.restore_from_snapshot();
+        self.psum_mem.restore_from_snapshot();
+    }
 }
 
 impl<'a> PriorityCache<'a> {
@@ -1252,14 +1346,24 @@ impl<'a> PriorityCache<'a> {
             b_occp: 0,
             psum_occp: 0,
             track_count: true,
+            snapshot: None,
         }
     }
 
     fn rowmap_insert(&mut self, rowptr: usize, csrrow: CsrRow) {
+        if let Some(ref mut snp) = self.snapshot {
+            snp.rowmap_inc.push((rowptr, None));
+        }
         self.rowmap.insert(rowptr, csrrow);
     }
 
     fn rowmap_remove(&mut self, rowptr: &usize) -> Option<CsrRow> {
+        let csrrow = self.rowmap.remove(rowptr);
+        if let Some(ref mut snp) = self.snapshot {
+            if let Some(ref c) = csrrow {
+                snp.rowmap_inc.push((*rowptr, Some(c.clone())));
+            }
+        }
         self.rowmap.remove(rowptr)
     }
 
@@ -1280,26 +1384,34 @@ impl<'a> PriorityCache<'a> {
             self.b_occp += row_size;
         }
 
+        // Freeup space first if necessary.
         if self.cur_num + row_size <= self.capability {
             self.cur_num += row_size;
-            self.valid_pq_row_dict.entry(a_loc[1])
-            .and_modify(|x| *x = max(*x, a_loc[0]))
-            .or_insert(a_loc[0]);
-            self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
-            if self.track_count { self.write_count += row_size; }
-            self.rowmap_insert(a_loc[1], csrrow);
         } else {
             if let Err(err) = self.freeup_space(row_size) {
                 panic!("{}", err);
             }
             self.cur_num += row_size;
-            self.valid_pq_row_dict.entry(a_loc[1])
-                .and_modify(|x| *x = max(*x, a_loc[0]))
-                .or_insert(a_loc[0]);
-            self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
-            if self.track_count { self.write_count += row_size; }
-            self.rowmap_insert(a_loc[1], csrrow);
         }
+
+        // Track snapshot.
+        if let Some(ref mut snp) = self.snapshot {
+            if self.valid_pq_row_dict.contains_key(&a_loc[1]) {
+                snp.old_pq_row_track.push(OldValue::Update(a_loc.clone()));
+            } else {
+                snp.old_pq_row_track.push(OldValue::Insert(a_loc[1]));
+            }
+        }
+
+        // Update priority status.
+        self.valid_pq_row_dict.entry(a_loc[1])
+            .and_modify(|x| *x = max(*x, a_loc[0]))
+            .or_insert(a_loc[0]);
+        self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
+
+        if self.track_count { self.write_count += row_size; }
+
+        self.rowmap_insert(a_loc[1], csrrow);
     }
 
     pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
@@ -1355,6 +1467,15 @@ impl<'a> PriorityCache<'a> {
 
     pub fn read_cache(&mut self, a_loc: [usize; 2]) -> Option<CsrRow> {
         if self.rowmap.contains_key(&a_loc[1]) {
+            // Track snapshot.
+            if let Some(ref mut snp) = self.snapshot {
+                if self.valid_pq_row_dict.contains_key(&a_loc[1]) {
+                    snp.old_pq_row_track.push(OldValue::Update(a_loc.clone()));
+                } else {
+                    snp.old_pq_row_track.push(OldValue::Insert(a_loc[1]));
+                }
+            }
+
             self.valid_pq_row_dict.entry(a_loc[1])
                 .and_modify(|x| *x = max(*x, a_loc[0]))
                 .or_insert(a_loc[0]);
