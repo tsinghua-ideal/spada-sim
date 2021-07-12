@@ -76,7 +76,7 @@ impl LRUCacheSimu {
 struct PriorityCacheSimuSnapshot {
     pub cur_num: usize,
     pub priority_queue: BinaryHeap<Reverse<[usize; 2]>>,
-    pub rowmap_inc: Vec<(usize, Option<usize>)>,
+    pub rowmap_inc: HashMap<usize, Option<usize>>,
     pub old_pq_row_track: HashMap<usize, LogItem>,
 }
 
@@ -97,7 +97,7 @@ impl Snapshotable for PriorityCacheSimu {
         self.snapshot = Some(PriorityCacheSimuSnapshot {
             cur_num: self.cur_num,
             priority_queue: self.priority_queue.clone(),
-            rowmap_inc: vec![],
+            rowmap_inc: HashMap::new(),
             old_pq_row_track: HashMap::new(),
         });
     }
@@ -110,7 +110,7 @@ impl Snapshotable for PriorityCacheSimu {
         match self.snapshot {
             Some(ref mut snp) => {
                 // Restore rowmap from execution log.
-                for (rowid, size) in snp.rowmap_inc.drain(..) {
+                for (rowid, size) in snp.rowmap_inc.drain() {
                     if let Some(s) = size {
                         self.rowmap.insert(rowid, s);
                     } else {
@@ -151,7 +151,9 @@ impl PriorityCacheSimu {
 
     fn rowmap_insert(&mut self, rowptr: usize, size: usize) {
         if let Some(ref mut snp) = self.snapshot {
-            snp.rowmap_inc.push((rowptr, None));
+            if !snp.rowmap_inc.contains_key(&rowptr) {
+                snp.rowmap_inc.insert(rowptr, None);
+            }
         }
         self.rowmap.insert(rowptr, size);
     }
@@ -159,8 +161,10 @@ impl PriorityCacheSimu {
     fn rowmap_remove(&mut self, rowptr: &usize) -> Option<usize> {
         let size = self.rowmap.remove(rowptr);
         if let Some(ref mut snp) = self.snapshot {
-            if let Some(ref c) = size {
-                snp.rowmap_inc.push((*rowptr, Some(c.clone())));
+            if !snp.rowmap_inc.contains_key(&rowptr) {
+                if let Some(ref c) = size {
+                    snp.rowmap_inc.insert(*rowptr, Some(*c));
+                }
             }
         }
         size
