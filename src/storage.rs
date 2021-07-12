@@ -96,9 +96,9 @@ struct LRUCacheSnapshot {
 }
 
 #[derive(Debug, Clone)]
-pub enum OldValue{
-    Update([usize; 2]),
-    Insert(usize),
+pub enum LogItem{
+    Update(usize),
+    Insert,
 }
 
 struct PriorityCacheSnapshot {
@@ -115,7 +115,8 @@ struct PriorityCacheSnapshot {
     pub b_occp: usize,
     pub psum_occp: usize,
     pub rowmap_inc: Vec<(usize, Option<CsrRow>)>,
-    pub old_pq_row_track: Vec<OldValue>,
+    // pub old_pq_row_track: Vec<LogItem>,
+    pub old_pq_row_track: HashMap<usize, LogItem>,
 }
 
 pub fn sorted_element_vec_to_csr_row(srt_ele_vec: Vec<Element>) -> CsrRow {
@@ -1267,7 +1268,7 @@ impl<'a> Snapshotable for PriorityCache<'a> {
             b_occp: self.b_occp,
             psum_occp: self.psum_occp,
             rowmap_inc: vec![],
-            old_pq_row_track: vec![],
+            old_pq_row_track: HashMap::new(),
         });
         self.b_mem.take_snapshot();
         self.psum_mem.take_snapshot();
@@ -1292,10 +1293,10 @@ impl<'a> Snapshotable for PriorityCache<'a> {
                 }
 
                 // Restore valid_pq_row_dict from execution log.
-                for a_loc in snp.old_pq_row_track.iter() {
-                    match a_loc {
-                        OldValue::Update(x) => self.valid_pq_row_dict.insert(x[1], x[0]),
-                        OldValue::Insert(y) => self.valid_pq_row_dict.remove(y),
+                for (colptr, logitem) in snp.old_pq_row_track.iter() {
+                    match logitem {
+                        LogItem::Update(x) => self.valid_pq_row_dict.insert(*colptr, *x),
+                        LogItem::Insert => self.valid_pq_row_dict.remove(colptr),
                     };
                 }
 
@@ -1364,7 +1365,7 @@ impl<'a> PriorityCache<'a> {
                 snp.rowmap_inc.push((*rowptr, Some(c.clone())));
             }
         }
-        self.rowmap.remove(rowptr)
+        csrrow
     }
 
     fn priority_queue_push(&mut self, a_loc: [usize; 2]) {
@@ -1396,10 +1397,12 @@ impl<'a> PriorityCache<'a> {
 
         // Track snapshot.
         if let Some(ref mut snp) = self.snapshot {
-            if self.valid_pq_row_dict.contains_key(&a_loc[1]) {
-                snp.old_pq_row_track.push(OldValue::Update(a_loc.clone()));
-            } else {
-                snp.old_pq_row_track.push(OldValue::Insert(a_loc[1]));
+            if !snp.old_pq_row_track.contains_key(&a_loc[1]) {
+                if self.valid_pq_row_dict.contains_key(&a_loc[1]) {
+                    snp.old_pq_row_track.insert(a_loc[1], LogItem::Update(self.valid_pq_row_dict[&a_loc[1]]));
+                } else {
+                    snp.old_pq_row_track.insert(a_loc[1], LogItem::Insert);
+                }
             }
         }
 
@@ -1469,10 +1472,12 @@ impl<'a> PriorityCache<'a> {
         if self.rowmap.contains_key(&a_loc[1]) {
             // Track snapshot.
             if let Some(ref mut snp) = self.snapshot {
-                if self.valid_pq_row_dict.contains_key(&a_loc[1]) {
-                    snp.old_pq_row_track.push(OldValue::Update(a_loc.clone()));
-                } else {
-                    snp.old_pq_row_track.push(OldValue::Insert(a_loc[1]));
+                if !snp.old_pq_row_track.contains_key(&a_loc[1]) {
+                    if self.valid_pq_row_dict.contains_key(&a_loc[1]) {
+                        snp.old_pq_row_track.insert(a_loc[1], LogItem::Update(self.valid_pq_row_dict[&a_loc[1]]));
+                    } else {
+                        snp.old_pq_row_track.insert(a_loc[1], LogItem::Insert);
+                    }
                 }
             }
 

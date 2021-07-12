@@ -188,13 +188,13 @@ fn main() {
                 omega_config.word_byte,
             );
             let block_num = 8;
-            let oracle_fetch = b_reuse_counter.oracle_fetch();
+            // let oracle_fetch = b_reuse_counter.oracle_fetch();
             // let b_row_len = b_reuse_counter.collect_row_length();
             // let avg_reuse_distance = b_reuse_counter.reuse_row_distance();
+            let oracle_blocked_fetch = b_reuse_counter.oracle_blocked_fetch();
             let cache_restricted_collect = b_reuse_counter.cached_fetch();
             let blocked_fetch = b_reuse_counter.blocked_fetch(block_num);
-            let oracle_blocked_fetch = b_reuse_counter.oracle_blocked_fetch();
-            // // let affinity_collect = b_reuse_counter.neighbor_row_affinity();
+            // let affinity_collect = b_reuse_counter.neighbor_row_affinity();
             // let improved_reuse = b_reuse_counter.improved_reuse(block_num);
 
             println!("-----Result-----");
@@ -262,10 +262,10 @@ fn main() {
             // //     affinity_collect.values().filter(|&x| *x >= 16).count(),
             // //     affinity_collect.values().filter(|&x| *x >= 4).count());
             // println!("Nonzero entries: {}", b_reuse_counter.b_mem.get_nonzero());
-            println!("Oracle fetch: {}", oracle_fetch.len());
+            // println!("Oracle fetch: {}", oracle_fetch.len());
+            println!("Oracle blocked fetch: {}", oracle_blocked_fetch.values().sum::<usize>());
             println!("Cache restricted fetch: {}", cache_restricted_collect.values().sum::<usize>());
             println!("{} blocked fetch: {}", block_num, blocked_fetch.values().sum::<usize>());
-            println!("Oracle blocked fetch: {}", oracle_blocked_fetch.values().sum::<usize>());
             // println!("Total reuse: {} improved reuse: {}, improved ratio: {:.2}", improved_reuse.0, improved_reuse.1, improved_reuse.2);
         }
 
