@@ -131,6 +131,8 @@ struct ExecTracker {
     pub touched_fiber_size: usize,
     pub dedup_fiber_size: usize,
     pub output_fiber_size: usize,
+    pub miss_size: usize,
+    pub psum_rw_size: usize,
 }
 
 impl ExecTracker {
@@ -141,6 +143,8 @@ impl ExecTracker {
             touched_fiber_size: 0,
             dedup_fiber_size: 0,
             output_fiber_size: 0,
+            miss_size: 0,
+            psum_rw_size: 0,
         }
     }
 
@@ -193,6 +197,9 @@ pub struct TrafficModel<'a> {
     exec_round: usize,
     /// Use each PE to do merge job in a round-robin way.
     merge_pe: usize,
+    /// Use merge_period to control merge scheme 3.
+    merge_counter: usize,
+    merge_period: usize,
 }
 
 impl<'a> TrafficModel<'a> {
@@ -231,7 +238,7 @@ impl<'a> TrafficModel<'a> {
             a_mem: a_mem,
             merge_queue: vec![],
             accelerator: accelerator,
-            block_shape: default_block_shape,
+            block_shape: default_block_shape.clone(),
             block_topo: BlockTracker::new(),
             exec_trackers: HashMap::new(),
             output_base_addr: output_base_addr,
@@ -241,6 +248,8 @@ impl<'a> TrafficModel<'a> {
             merge_trackers: HashMap::new(),
             exec_round: 0,
             merge_pe: 0,
+            merge_counter: 0,
+            merge_period: lane_num / default_block_shape[1],
         }
     }
 
@@ -249,6 +258,7 @@ impl<'a> TrafficModel<'a> {
         self.exec_round = 0;
         loop {
             println!("----");
+            println!("merge counter: {}, merge period: {}", self.merge_counter, self.merge_period);
             self.exec_round += 1;
             // Assign jobs to PEs. If no jobs can be assigned, end execution.
             if !self.assign_jobs() {
@@ -346,22 +356,54 @@ impl<'a> TrafficModel<'a> {
                         //     }
                         // }
 
-                        // Merge scheme 2:
-                        // Every time a tile of a row is finished, start to merge the psums.
+                        // // Merge scheme 2:
+                        // // Every time a tile of a row is finished, start to merge the psums.
+                        // if output_fibers[row_pos].is_some()
+                        //     && !self.is_window_valid(
+                        //         *row,
+                        //         1,
+                        //         pe.col_s + pe.reduction_window[0],
+                        //         pe.cur_block.col_s,
+                        //         pe.cur_block.width,
+                        //     )
+                        // {
+                        //     let tracker = self.merge_trackers.get_mut(row).unwrap();
+                        //     // Unregister current computed block from the merge tracker.
+                        //     tracker.blocks.retain(|x| *x != pe.cur_block.get_idx());
+                        //     self.merge_queue.push(*row);
+                        // }
+
+                        // Merge scheme 3:
+                        // When reaches the merge period.
                         if output_fibers[row_pos].is_some()
-                            && !self.is_window_valid(
-                                *row,
-                                1,
-                                pe.col_s + pe.reduction_window[0],
-                                pe.cur_block.col_s,
-                                pe.cur_block.width,
-                            )
+                            && self.merge_counter == self.merge_period - 1 {
+                            self.merge_queue.push(*row);
+                        }
+
+                        if output_fibers[row_pos].is_some()
+                        && !self.is_window_valid(
+                            *row,
+                            1,
+                            pe.col_s + pe.reduction_window[0],
+                            pe.cur_block.col_s,
+                            pe.cur_block.width,
+                        )
                         {
                             let tracker = self.merge_trackers.get_mut(row).unwrap();
                             // Unregister current computed block from the merge tracker.
                             tracker.blocks.retain(|x| *x != pe.cur_block.get_idx());
                             self.merge_queue.push(*row);
                         }
+                    }
+                    self.merge_counter = (self.merge_counter + 1) % self.merge_period;
+                }
+
+                for csrrow in output_fibers.iter() {
+                    if let Some(cr) = csrrow {
+                        self.exec_trackers
+                            .get_mut(&pe.cur_block.get_idx())
+                            .unwrap()
+                            .psum_rw_size += cr.size();
                     }
                 }
 
@@ -538,13 +580,19 @@ impl<'a> TrafficModel<'a> {
                         tracker.finished = row_finished;
                     }
                 }
+
+                // Adjust the merge period according to the block shape.
+                self.merge_counter = 0;
+                self.merge_period = self.lane_num / block.height;
                 return Some(block);
             } else {
                 // Block shape adaptation can be added here. For now we only support adjust block
                 // when finishing traverse over K dim.
                 self.row_s += self.block_shape[1];
                 self.col_s = 0;
-                self.adjust_block([self.col_s, self.row_s]);
+                if self.row_s < self.a_mem.get_row_len() {
+                    self.adjust_block([self.col_s, self.row_s]);
+                }
             }
         }
     }
@@ -657,31 +705,127 @@ impl<'a> TrafficModel<'a> {
         match self.accelerator {
             Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {},
             Accelerator::NewOmega => {
-                let neighbor_blocks = self.get_neighbor_blocks(&cur_idx);
+                let block_adjust_scheme = 3;
+                match block_adjust_scheme {
+                    0 => {
+                        // Scheme 0: Based on the reuse of the previous exeuction.
+                        let neighbor_blocks = self.get_neighbor_blocks(&cur_idx);
 
-                // If no neighbor blocks, then use the default reduction window shape.
-                if neighbor_blocks.len() == 0 {
-                    return;
-                }
-                // We look at the neighbor blocks and find the block with the largest total reuse.
-                let max_reuse_block = neighbor_blocks[neighbor_blocks
-                    .iter()
-                    .map(|x| self.exec_trackers[x].c_reuse() + self.exec_trackers[x].b_reuse())
-                    .position_max_by(|a, b| a.partial_cmp(b).unwrap())
-                    .unwrap()];
+                        // If no neighbor blocks, then use the default reduction window shape.
+                        if neighbor_blocks.len() == 0 {
+                            return;
+                        }
+                        // We look at the neighbor blocks and find the block with the largest total reuse.
+                        let max_reuse_block = neighbor_blocks[neighbor_blocks
+                            .iter()
+                            .map(|x| self.exec_trackers[x].c_reuse() + self.exec_trackers[x].b_reuse())
+                            .position_max_by(|a, b| a.partial_cmp(b).unwrap())
+                            .unwrap()];
 
-                let cr = self.exec_trackers[&max_reuse_block].c_reuse();
-                let br = self.exec_trackers[&max_reuse_block].b_reuse();
+                        let cr = self.exec_trackers[&max_reuse_block].c_reuse();
+                        let br = self.exec_trackers[&max_reuse_block].b_reuse();
 
-                if cr >= br {
-                    if self.block_shape[1] > 1 {
-                        self.block_shape[1] /= 2;
+                        if cr >= br {
+                            if self.block_shape[1] > 1 {
+                                self.block_shape[1] /= 2;
+                            }
+                        } else {
+                            if self.block_shape[1] * 2 <= self.lane_num {
+                                self.block_shape[1] *= 2;
+                            }
+                        }
+                    },
+                    1 => {
+                        // Scheme 1: Based on the reuse of the above execution.
+                        let above_block = self.block_topo.find_above(&cur_idx);
+
+                        // If no neighbor blocks, then the block shape remains unchanged.
+                        if above_block.is_none() {
+                            return;
+                        }
+                        let above_block = above_block.unwrap();
+
+                        let cr = self.exec_trackers[&above_block].c_reuse();
+                        let br = self.exec_trackers[&above_block].b_reuse();
+
+                        if cr >= br {
+                            if self.block_shape[1] > 1 {
+                                self.block_shape[1] /= 2;
+                            }
+                        } else {
+                            if self.block_shape[1] * 2 <= self.lane_num {
+                                self.block_shape[1] *= 2;
+                            }
+                        }
+                    },
+                    2 => {
+                        // Scheme 2: Based on the reuse of the last two block execution.
+                        let n1_block = self.block_topo.find_above(&cur_idx);
+                        if n1_block.is_none() { return; }
+                        let n1_block = n1_block.unwrap();
+                        let n1_row_num = cur_idx[1] - n1_block[1];
+
+                        let n2_block = self.block_topo.find_above(&n1_block);
+                        if n2_block.is_none() { return; }
+                        let n2_block = n2_block.unwrap();
+                        let n2_row_num = n1_block[1] - n2_block[1];
+
+                        if self.exec_trackers[&n1_block].b_reuse() as f32 / n1_row_num as f32 >=
+                            self.exec_trackers[&n2_block].b_reuse() as f32 / n2_row_num as f32 {
+                            if n1_row_num >= n2_row_num {
+                                self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                            } else {
+                                self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                            }
+                        } else {
+                            if n1_row_num >= n2_row_num {
+                                self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                            } else {
+                                self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                            }
+                        }
+                    },
+                    3 => {
+                        // Scheme 3: Based on the cost of the last two block execution.
+                        let n1_block = self.block_topo.find_above(&cur_idx);
+                        if n1_block.is_none() { return; }
+                        let n1_block = n1_block.unwrap();
+                        let n1_row_num = cur_idx[1] - n1_block[1];
+                        let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x|
+                            s + self.a_mem.indptr[x+1] - self.a_mem.indptr[x]);
+
+                        let n2_block = self.block_topo.find_above(&n1_block);
+                        if n2_block.is_none() { return; }
+                        let n2_block = n2_block.unwrap();
+                        let n2_row_num = n1_block[1] - n2_block[1];
+                        let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x|
+                            s + self.a_mem.indptr[x+1] - self.a_mem.indptr[x]);
+
+                        let n1_cost = self.exec_trackers[&n1_block].miss_size * 100 +
+                            self.exec_trackers[&n1_block].psum_rw_size;
+                        let n2_cost = self.exec_trackers[&n2_block].miss_size * 100 +
+                            self.exec_trackers[&n2_block].psum_rw_size;
+
+                        println!("n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
+                            n1_cost, n1_ele_size, n2_cost, n2_ele_size);
+
+                        if (n1_cost as f32 / n1_ele_size as f32) <= (n2_cost as f32 / n2_ele_size as f32) {
+                            if n1_row_num >= n2_row_num {
+                                self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                            } else {
+                                self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                            }
+                        } else {
+                            if n1_row_num >= n2_row_num {
+                                self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                            } else {
+                                self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                            }
+                        }
                     }
-                } else {
-                    if self.block_shape[1] * 2 <= self.lane_num {
-                        self.block_shape[1] *= 2;
-                    }
+                    _ => panic!("Invalid merge scheme:{}", block_adjust_scheme),
                 }
+
             }
         }
     }
@@ -693,38 +837,49 @@ impl<'a> TrafficModel<'a> {
             return [self.lane_num / self.block_shape[1], self.block_shape[1]];
         }
 
-        let neighbor_blocks = self.get_neighbor_blocks(&cur_idx);
+        match self.accelerator {
+            Accelerator::NewOmega => [self.lane_num / self.block_shape[1], self.block_shape[1]],
+            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
+                let mut reduction_window: [usize; 2];
+                // // window adjust scheme 0 that reduction window is decoupled from block.
+                // let neighbor_blocks = self.get_neighbor_blocks(&cur_idx);
+        
+                // // If no neighbor blocks, then use the default reduction window shape.
+                // if neighbor_blocks.len() == 0 {
+                //     return [self.lane_num, 1];
+                // }
+                // // We look at the neighbor blocks and find the block with the largest total reuse.
+                // let max_reuse_block = neighbor_blocks[neighbor_blocks
+                //     .iter()
+                //     .map(|x| self.exec_trackers[x].c_reuse() + self.exec_trackers[x].b_reuse())
+                //     .position_max_by(|a, b| a.partial_cmp(b).unwrap())
+                //     .unwrap()];
+        
+                // let cr = self.exec_trackers[&max_reuse_block].c_reuse();
+                // let br = self.exec_trackers[&max_reuse_block].b_reuse();
+                // reduction_window = self.exec_trackers[&max_reuse_block].window;
+        
+                // if cr >= br {
+                //     if reduction_window[1] > 1 && reduction_window[0] * 2 <= block_shape[0] {
+                //         reduction_window[1] /= 2;
+                //         reduction_window[0] *= 2;
+                //     }
+                // } else {
+                //     if reduction_window[0] > 1 && reduction_window[1] * 2 <= block_shape[1] {
+                //         reduction_window[0] /= 2;
+                //         reduction_window[1] *= 2;
+                //     }
+                // }
 
-        // If no neighbor blocks, then use the default reduction window shape.
-        if neighbor_blocks.len() == 0 {
-            return [self.lane_num, 1];
-        }
-        // We look at the neighbor blocks and find the block with the largest total reuse.
-        let max_reuse_block = neighbor_blocks[neighbor_blocks
-            .iter()
-            .map(|x| self.exec_trackers[x].c_reuse() + self.exec_trackers[x].b_reuse())
-            .position_max_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap()];
+                // // window adjust scheme 1 that pin the window.
+                // reduction_window = [8, 1];
 
-        let cr = self.exec_trackers[&max_reuse_block].c_reuse();
-        let br = self.exec_trackers[&max_reuse_block].b_reuse();
-        let mut reduction_window = self.exec_trackers[&max_reuse_block].window;
+                // window adjust scheme 2 that coupled with block.
+                reduction_window = [self.lane_num / self.block_shape[1], self.block_shape[1]];
 
-        if cr >= br {
-            if reduction_window[1] > 1 && reduction_window[0] * 2 <= block_shape[0] {
-                reduction_window[1] /= 2;
-                reduction_window[0] *= 2;
+                reduction_window
             }
-        } else {
-            if reduction_window[0] > 1 && reduction_window[1] * 2 <= block_shape[1] {
-                reduction_window[0] /= 2;
-                reduction_window[1] *= 2;
-            }
         }
-
-        let reduction_window = [8, 1];
-
-        reduction_window
     }
 
     /// The neighbor blocks can be defined here.
@@ -761,6 +916,11 @@ impl<'a> TrafficModel<'a> {
                 let mut sfs = vec![];
                 for colid in psums.drain(0..used_num) {
                     let csrrow = self.fiber_cache.consume(colid).unwrap();
+                    // Update tracker's psum rw counter.
+                    self.exec_trackers
+                        .get_mut(&pe.cur_block.get_idx())
+                        .unwrap()
+                        .psum_rw_size += csrrow.size();
                     fbs.push(csrrow);
                     sfs.push((colid, 1f64));
                 }
@@ -799,8 +959,16 @@ impl<'a> TrafficModel<'a> {
                         fbs.push(csrrow);
                         sfs.push((*colid, *value));
                     } else {
+                        let missed = !self.fiber_cache.rowmap.contains_key(colid);
                         match self.fiber_cache.read([*rowidx, *colid]) {
                             Some(csrrow) => {
+                                // Update tracker's miss_counter.
+                                if missed {
+                                    self.exec_trackers
+                                        .get_mut(&pe.cur_block.get_idx())
+                                        .unwrap()
+                                        .miss_size += csrrow.size();
+                                }
                                 broadcast_cache.insert(*colid, csrrow.clone());
                                 fbs.push(csrrow);
                                 sfs.push((*colid, *value));

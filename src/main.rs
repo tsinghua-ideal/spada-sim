@@ -10,6 +10,7 @@ mod util;
 mod oracle_storage_traffic_model;
 mod b_reuse_counter;
 mod pqcache_storage_traffic_model;
+mod new_pqcache_storage_traffic_model;
 
 use std::cmp::min;
 
@@ -81,16 +82,18 @@ fn main() {
 
             let output_base_addr = dram_b.indptr.len();
             // Determine the default window & block shape.
+            let default_block_shape = match cli.accelerator {
+                Accelerator::Ip => [omega_config.lane_num, 1],
+                Accelerator::Omega => [omega_config.block_shape[0], omega_config.block_shape[1]],
+                Accelerator::Op => [1, usize::MAX],
+                Accelerator::NewOmega => [omega_config.block_shape[0], omega_config.block_shape[1]],
+            };
+
             let default_reduction_window = match cli.accelerator {
-                Accelerator::Ip | Accelerator::Omega | Accelerator::NewOmega => [omega_config.lane_num, 1],
+                Accelerator::Ip | Accelerator::Omega | Accelerator::NewOmega => [omega_config.lane_num / omega_config.block_shape[1], omega_config.block_shape[1]],
                 Accelerator::Op => [1, omega_config.lane_num],
             };
 
-            let default_block_shape = match cli.accelerator {
-                Accelerator::Ip | Accelerator::NewOmega => [omega_config.lane_num, 1],
-                Accelerator::Omega => [omega_config.block_shape[0], omega_config.block_shape[1]],
-                Accelerator::Op => [1, usize::MAX],
-            };
 
             // Oracle execution: to use the optimal reduction window shape.
             let oracle_exec = true;
@@ -191,11 +194,18 @@ fn main() {
             // let oracle_fetch = b_reuse_counter.oracle_fetch();
             // let b_row_len = b_reuse_counter.collect_row_length();
             // let avg_reuse_distance = b_reuse_counter.reuse_row_distance();
-            let oracle_blocked_fetch = b_reuse_counter.oracle_blocked_fetch();
-            let cache_restricted_collect = b_reuse_counter.cached_fetch();
-            let blocked_fetch = b_reuse_counter.blocked_fetch(block_num);
+            // let oracle_blocked_fetch = b_reuse_counter.oracle_blocked_fetch();
+            // let cache_restricted_collect = b_reuse_counter.cached_fetch();
+            // let blocked_fetch = b_reuse_counter.blocked_fetch(block_num);
+            // let reuse_dist_guided_fetch = b_reuse_counter.reuse_dist_guided_blocked_fetch(block_num, 4);
             // let affinity_collect = b_reuse_counter.neighbor_row_affinity();
             // let improved_reuse = b_reuse_counter.improved_reuse(block_num);
+
+            let mut scanned_b_fetch = vec![];
+            for row_num in vec![1, 2, 4, 8, 16, 32, 64] {
+                let b_fetch = b_reuse_counter.blocked_fetch(row_num);
+                scanned_b_fetch.push(b_fetch.values().sum::<usize>());
+            }
 
             println!("-----Result-----");
             // println!("Row length dist: entries: {} >=256: {} >=180: {} >=128: {} >=90: {}",
@@ -263,10 +273,12 @@ fn main() {
             // //     affinity_collect.values().filter(|&x| *x >= 4).count());
             // println!("Nonzero entries: {}", b_reuse_counter.b_mem.get_nonzero());
             // println!("Oracle fetch: {}", oracle_fetch.len());
-            println!("Oracle blocked fetch: {}", oracle_blocked_fetch.values().sum::<usize>());
-            println!("Cache restricted fetch: {}", cache_restricted_collect.values().sum::<usize>());
-            println!("{} blocked fetch: {}", block_num, blocked_fetch.values().sum::<usize>());
+            // println!("Oracle blocked fetch: {}", oracle_blocked_fetch.values().sum::<usize>());
+            // println!("Cache restricted fetch: {}", cache_restricted_collect.values().sum::<usize>());
+            // println!("{} blocked fetch: {}", block_num, blocked_fetch.values().sum::<usize>());
             // println!("Total reuse: {} improved reuse: {}, improved ratio: {:.2}", improved_reuse.0, improved_reuse.1, improved_reuse.2);
+            // println!("Reuse dist guided fetch: {}", reuse_dist_guided_fetch.values().sum::<usize>());
+            println!("{:?}", scanned_b_fetch);
         }
 
         Simulator::AccurateSimu => {

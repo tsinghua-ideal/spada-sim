@@ -10,6 +10,11 @@ nn=('alexnetconv0' 'alexnetconv1' 'alexnetconv2' 'alexnetconv3' 'alexnetconv4'
 'resnet50layer2_conv3' 'resnet50layer3_conv1' 'resnet50layer3_conv2' 'resnet50layer3_conv3'
 'resnet50layer4_conv1' 'resnet50layer4_conv2' 'resnet50layer4_conv3' 'resnet50fc')
 
+improved_ss=('Ge87H76' 'Ge99H100' 'gupta2' 'Maragal_7' 'msc10848' 'ramage02')
+improved_nn=('alexnetconv1' 'alexnetconv2' 'alexnetconv3' 'alexnetconv4'
+'alexnetfc1' 'alexnetfc2' 'resnet50fc' 'resnet50layer3_conv1' 'resnet50layer3_conv2'
+'resnet50layer3_conv3' 'resnet50layer4_conv1' 'resnet50layer4_conv2' 'resnet50layer4_conv3')
+
 cur_date=$(date +'%m_%d_%H')
 echo "----Execute use $1 on $2----"
 echo "Write output to $3/${cur_date}"
@@ -25,6 +30,17 @@ elif [[ "$2" == "nn" ]]; then
         echo "* start $i"
         nohup ./target/debug/omega-sim trafficmodel $1 $2 $i > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
         sleep 2
+    done
+elif [[ "$2" == "improve" ]]; then
+    for i in "${improved_ss[@]}"; do
+        echo "* start $i"
+        nohup ./target/debug/omega-sim trafficmodel $1 ss $i > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
+        # sleep 2
+    done
+    for i in "${improved_nn[@]}"; do
+        echo "* start $i"
+        nohup ./target/debug/omega-sim trafficmodel $1 nn $i > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
+        # sleep 2
     done
 else
     echo "Invalid workload type $2."

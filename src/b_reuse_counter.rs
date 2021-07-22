@@ -259,6 +259,28 @@ impl PriorityCacheSimu {
     }
 }
 
+struct ReuseDistanceTracker {
+    prev_impr_occr: VecDeque<usize>,
+    cache_capacity: usize,
+    ip_pos: HashMap<usize, usize>,
+    ip_counter: usize,
+    omega_pos: HashMap<usize, usize>,
+    omega_counter: usize,
+}
+
+impl ReuseDistanceTracker {
+    pub fn new(cache_capacity: usize) -> ReuseDistanceTracker {
+        ReuseDistanceTracker {
+            prev_impr_occr: VecDeque::new(),
+            cache_capacity,
+            ip_pos: HashMap::new(),
+            ip_counter: 0,
+            omega_pos: HashMap::new(),
+            omega_counter: 0,
+        }
+    }
+}
+
 pub struct BReuseCounter<'a> {
     pub a_mem: &'a mut CsrMatStorage,
     pub b_mem: &'a mut CsrMatStorage,
@@ -369,7 +391,7 @@ impl<'a> BReuseCounter<'a> {
                 if finished { break; }
                 coloffset += 1;
             }
-            println!("last row: {} b fetch: {}", min(i+row_num, self.a_mem.get_row_len()), collect.values().sum::<usize>());
+            println!("last row: {} b fetch: {}", min(i+row_num-1, self.a_mem.get_row_len()), collect.values().sum::<usize>());
         }
 
         return collect;
@@ -630,4 +652,104 @@ impl<'a> BReuseCounter<'a> {
 
         return old_collect_track;
     }
+
+    pub fn reuse_dist_guided_blocked_fetch(&mut self, lane_num: usize, hist_len: usize) -> HashMap<usize, usize> {
+        println!("--oracle blocked fetch");
+        let mut collect: HashMap<usize, usize> = HashMap::new();
+        let mut cache = PriorityCacheSimu::new(self.cache_size, 8);
+        let mut dist_tracker = ReuseDistanceTracker::new(self.cache_size / self.word_byte / 2);
+
+        let mut row_s = 0;
+        let mut row_num = 1;
+        while row_s < self.a_mem.get_row_len() {
+            
+            // Track the reuse distance.
+            let prfl_window = if row_num < lane_num {row_num * 2} else {row_num};
+            let prfl_end = min(row_s+prfl_window, self.a_mem.get_row_len());
+            println!("Row: {} row_num: {} prfl_end: {}", row_s, row_num, prfl_end);
+
+            let prev_occr = dist_tracker.prev_impr_occr.iter().sum::<usize>();
+            let mut ip_dist: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+            let mut omega_dist: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+            // Ip reuse distance.
+            for rowidx in row_s..prfl_end {
+                let s = self.a_mem.indptr[rowidx];
+                let t = self.a_mem.indptr[rowidx+1];
+                for colptr in self.a_mem.indices[s..t].iter() {
+                    if dist_tracker.ip_pos.contains_key(colptr) {
+                        let ele_dist = dist_tracker.ip_counter - dist_tracker.ip_pos[colptr];
+                        ip_dist.entry(rowidx)
+                        .and_modify(|x| x.push((*colptr, ele_dist)))
+                        .or_insert(vec![(*colptr, ele_dist)]);
+                    }
+                    dist_tracker.ip_counter += self.b_mem.indptr[*colptr+1] - self.b_mem.indptr[*colptr];
+                    dist_tracker.ip_pos.insert(*colptr, dist_tracker.ip_counter);
+                }
+            }
+
+            // Omega reuse distance.
+            let mut ss = vec![];
+            let mut st = vec![];
+            for rowidx in row_s..prfl_end {
+                ss.push(self.a_mem.indptr[rowidx]);
+                st.push(self.a_mem.indptr[rowidx+1]);
+            }
+            let mut coloffset = 0;
+            loop {
+                let mut finished = true;
+                for rowidx in row_s..row_s+row_num {
+                    let colidx = ss[rowidx - row_s] + coloffset;
+                    if colidx >= st[rowidx - row_s] { continue; }
+                    let colptr = self.a_mem.indices[colidx];
+                    finished = false;
+
+                    if dist_tracker.omega_pos.contains_key(&colptr) {
+                        let ele_dist = dist_tracker.omega_counter - dist_tracker.omega_pos[&colptr];
+                        omega_dist.entry(rowidx)
+                        .and_modify(|x| x.push((colidx, ele_dist)))
+                        .or_insert(vec![(colidx, ele_dist)]);
+                    }
+                    dist_tracker.omega_counter += self.b_mem.indptr[colptr+1] - self.b_mem.indptr[colptr];
+                    dist_tracker.omega_pos.insert(colptr, dist_tracker.omega_counter);
+                }
+                if finished { break; }
+                coloffset += 1;
+            }
+
+            // Compare ip and omega reuse distance.
+            for rowidx in row_s..row_s+row_num {
+                if !ip_dist.contains_key(&rowidx) || !omega_dist.contains_key(&rowidx) {
+                    continue;
+                }
+                let mut counter = 0;
+                for (id, od) in ip_dist[&rowidx].iter().zip(omega_dist[&rowidx].iter()) {
+                    println!("col: {} ip reuse dist: {} omega reuse dist: {}", id.0, id.1, od.1);
+                    if (id.1 > dist_tracker.cache_capacity) && (dist_tracker.cache_capacity > od.1) {
+                        counter += 1;
+                    }
+                }
+                dist_tracker.prev_impr_occr.push_front(counter);
+            }
+
+            dist_tracker.prev_impr_occr.truncate(hist_len);
+            println!("previous occurance: {:?}", &dist_tracker.prev_impr_occr);
+
+            // Execute and the reuse distance.
+            self._exec(&mut collect, &mut cache, row_s, row_s + row_num);
+
+            let cur_occr = dist_tracker.prev_impr_occr.iter().sum::<usize>();
+            row_s += row_num;
+
+            if cur_occr as f32 > 1.3 * (prev_occr as f32) && row_num <= lane_num {
+                row_num *= 2;
+            } else if (cur_occr as f32) < 0.7 * (prev_occr as f32) && row_num > 1 {
+                row_num /= 2;
+            }
+
+            row_num = min(row_num, self.a_mem.get_row_len() - row_s);
+        }
+
+        collect
+    }
+
 }
