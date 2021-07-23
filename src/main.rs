@@ -10,7 +10,6 @@ mod util;
 mod oracle_storage_traffic_model;
 mod b_reuse_counter;
 mod pqcache_storage_traffic_model;
-mod new_pqcache_storage_traffic_model;
 
 use std::cmp::min;
 

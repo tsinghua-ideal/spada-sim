@@ -6,5 +6,5 @@
     "lane_num": 8,
     "cache_size": 1048576,
     "word_byte": 8,
-    "block_shape": [1000000, 1]
+    "block_shape": [1000000, 2]
 }
