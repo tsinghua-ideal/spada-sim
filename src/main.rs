@@ -1,15 +1,15 @@
+mod b_reuse_counter;
 mod components;
 mod frontend;
 mod gemm;
+mod oracle_storage_traffic_model;
 mod pipeline_simu;
+mod pqcache_storage_traffic_model;
 mod preprocessing;
 mod py2rust;
 mod storage;
 mod storage_traffic_model;
 mod util;
-mod oracle_storage_traffic_model;
-mod b_reuse_counter;
-mod pqcache_storage_traffic_model;
 
 use std::cmp::min;
 
@@ -23,8 +23,8 @@ use crate::pipeline_simu::PipelineSimulator;
 use crate::preprocessing::affinity_based_row_reordering;
 use crate::py2rust::load_pickled_gemms;
 use crate::storage::CsrMatStorage;
-use structopt::StructOpt;
 use b_reuse_counter::BReuseCounter;
+use structopt::StructOpt;
 
 // Workload included:
 // ss: ['2cubes_sphere', 'amazon0312', 'ca-CondMat', 'cage12', 'cit-Patents',
@@ -63,7 +63,6 @@ fn main() {
 
     match cli.simulator {
         Simulator::TrafficModel => {
-
             let (mut dram_a, mut dram_b) = CsrMatStorage::init_with_gemm(gemm);
             let mut dram_psum = VectorStorage::new();
 
@@ -89,10 +88,12 @@ fn main() {
             };
 
             let default_reduction_window = match cli.accelerator {
-                Accelerator::Ip | Accelerator::Omega | Accelerator::NewOmega => [omega_config.lane_num / omega_config.block_shape[1], omega_config.block_shape[1]],
+                Accelerator::Ip | Accelerator::Omega | Accelerator::NewOmega => [
+                    omega_config.lane_num / omega_config.block_shape[1],
+                    omega_config.block_shape[1],
+                ],
                 Accelerator::Op => [1, omega_config.lane_num],
             };
-
 
             // Oracle execution: to use the optimal reduction window shape.
             let oracle_exec = true;
@@ -179,7 +180,7 @@ fn main() {
                     &idx, sliced_indptr, sliced_data
                 );
             }
-        },
+        }
 
         Simulator::BReuseCounter => {
             let (mut dram_a, mut dram_b) = CsrMatStorage::init_with_gemm(gemm);

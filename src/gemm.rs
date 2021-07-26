@@ -4,15 +4,23 @@ use std::cmp::min;
 use std::fmt;
 
 #[derive(FromPyObject, Debug)]
+pub struct GEMMRawTuple(
+    pub (usize, usize),
+    pub Vec<usize>,
+    pub Vec<usize>,
+    pub Vec<f64>,
+    pub (usize, usize),
+    pub Vec<usize>,
+    pub Vec<usize>,
+    pub Vec<f64>,
+);
+
+#[derive(FromPyObject, Debug)]
 pub struct CsrTuple(
-    (usize, usize),
-    Vec<usize>,
-    Vec<usize>,
-    Vec<f64>,
-    (usize, usize),
-    Vec<usize>,
-    Vec<usize>,
-    Vec<f64>,
+    pub (usize, usize),
+    pub Vec<usize>,
+    pub Vec<usize>,
+    pub Vec<f64>,
 );
 
 pub struct GEMM {
@@ -22,11 +30,25 @@ pub struct GEMM {
 }
 
 impl GEMM {
-    pub fn new(gn: &str, csrt: CsrTuple) -> GEMM {
+    pub fn new(gn: &str, grt: GEMMRawTuple) -> GEMM {
         GEMM {
             name: gn.to_owned(),
-            a: CsMat::new(csrt.0, csrt.1, csrt.2, csrt.3),
-            b: CsMat::new(csrt.4, csrt.5, csrt.6, csrt.7),
+            a: CsMat::new(grt.0, grt.1, grt.2, grt.3),
+            b: CsMat::new(grt.4, grt.5, grt.6, grt.7),
+        }
+    }
+
+    pub fn from_mat(mn: &str, mat: CsMat<f64>) -> GEMM {
+        // If the matrix is square, use A * A, otherwise A * AT.
+        let b_mat = if mat.shape().0 == mat.shape().1 {
+            mat.clone()
+        } else {
+            mat.clone().transpose_into()
+        };
+        GEMM {
+            name: mn.to_owned(),
+            a: mat,
+            b: b_mat,
         }
     }
 }

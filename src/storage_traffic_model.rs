@@ -6,7 +6,7 @@ use std::{
 };
 
 use itertools::{izip, merge, merge_join_by, Itertools, Merge, MergeJoinBy};
-use storage::{LRUCache, VectorStorage, RandomCache, LRURandomCache};
+use storage::{LRUCache, LRURandomCache, RandomCache, VectorStorage};
 
 use crate::frontend::Accelerator;
 use crate::{
@@ -80,9 +80,11 @@ impl BlockTracker {
 
     pub fn find_left(&self, cur_block: &[usize; 2]) -> Option<[usize; 2]> {
         let row_pos = match self.row_s_list.binary_search(&cur_block[1]) {
-            Ok(r) | Err(r) => r as i32 - 1
+            Ok(r) | Err(r) => r as i32 - 1,
         };
-        if row_pos < 0 { return None; }
+        if row_pos < 0 {
+            return None;
+        }
         let row_pos = row_pos as usize;
 
         let col_pos = match self.col_s_list[row_pos].binary_search(&cur_block[0]) {
@@ -216,8 +218,14 @@ impl<'a> TrafficModel<'a> {
             reduction_window: default_reduction_window.clone(),
             pe_num: pe_num,
             lane_num: lane_num,
-            fiber_cache: LRURandomCache::new(cache_size, word_byte, output_base_addr, lane_num * a_mem.get_nonzero() / a_mem.get_row_len(),
-                b_mem, psum_mem),
+            fiber_cache: LRURandomCache::new(
+                cache_size,
+                word_byte,
+                output_base_addr,
+                lane_num * a_mem.get_nonzero() / a_mem.get_row_len(),
+                b_mem,
+                psum_mem,
+            ),
             pes: vec![
                 PE {
                     reduction_window: default_reduction_window.clone(),
@@ -326,7 +334,7 @@ impl<'a> TrafficModel<'a> {
                     for (row_pos, row) in rowidxs.iter().enumerate() {
                         // println!("row: {}", row);
 
-                        // // Merge scheme 1: 
+                        // // Merge scheme 1:
                         // if output_fibers[row_pos].is_some()
                         //     && !self.is_window_valid(
                         //         *row,
@@ -369,12 +377,20 @@ impl<'a> TrafficModel<'a> {
                 self.write_psum(rowidxs, output_fibers);
             }
 
-            println!("Cache read_count: + {} -> {}, write_count: + {} -> {}",
-                self.fiber_cache.read_count - prev_cache_read_count, self.fiber_cache.read_count,
-                self.fiber_cache.write_count - prev_cache_write_count, self.fiber_cache.write_count);
-            println!("Cache occp: {} in {}, psum_occp: {}, b_occp: {}",
-                self.fiber_cache.cur_num, self.fiber_cache.capability,
-                self.fiber_cache.psum_occp, self.fiber_cache.b_occp);
+            println!(
+                "Cache read_count: + {} -> {}, write_count: + {} -> {}",
+                self.fiber_cache.read_count - prev_cache_read_count,
+                self.fiber_cache.read_count,
+                self.fiber_cache.write_count - prev_cache_write_count,
+                self.fiber_cache.write_count
+            );
+            println!(
+                "Cache occp: {} in {}, psum_occp: {}, b_occp: {}",
+                self.fiber_cache.cur_num,
+                self.fiber_cache.capability,
+                self.fiber_cache.psum_occp,
+                self.fiber_cache.b_occp
+            );
             println!("Cache miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}",
                 self.fiber_cache.miss_count - prev_miss_count, self.fiber_cache.miss_count,
                 self.fiber_cache.b_evict_count - prev_b_evict_count, self.fiber_cache.b_evict_count,
@@ -412,7 +428,8 @@ impl<'a> TrafficModel<'a> {
             let psum_addrs = self.output_trackers.get(&rowid).unwrap();
             if psum_addrs.len() == 1 {
                 if self.merge_trackers[&rowid].finished
-                && self.merge_trackers[&rowid].blocks.len() == 0 {
+                    && self.merge_trackers[&rowid].blocks.len() == 0
+                {
                     println!(
                         "Assign jobs: swapout addr {} of {}",
                         psum_addrs[0], self.merge_queue[i]
@@ -655,7 +672,7 @@ impl<'a> TrafficModel<'a> {
     /// For now we only support adjust block when finishing traverse over K dim.
     fn adjust_block(&mut self, cur_idx: [usize; 2]) {
         match self.accelerator {
-            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {},
+            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {}
             Accelerator::NewOmega => {
                 let neighbor_blocks = self.get_neighbor_blocks(&cur_idx);
 

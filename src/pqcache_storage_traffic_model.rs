@@ -6,7 +6,7 @@ use std::{
 };
 
 use itertools::{izip, merge, merge_join_by, Itertools, Merge, MergeJoinBy};
-use storage::{LRUCache, VectorStorage, RandomCache, LRURandomCache, PriorityCache};
+use storage::{LRUCache, LRURandomCache, PriorityCache, RandomCache, VectorStorage};
 
 use crate::frontend::Accelerator;
 use crate::{
@@ -80,9 +80,11 @@ impl BlockTracker {
 
     pub fn find_left(&self, cur_block: &[usize; 2]) -> Option<[usize; 2]> {
         let row_pos = match self.row_s_list.binary_search(&cur_block[1]) {
-            Ok(r) | Err(r) => r as i32 - 1
+            Ok(r) | Err(r) => r as i32 - 1,
         };
-        if row_pos < 0 { return None; }
+        if row_pos < 0 {
+            return None;
+        }
         let row_pos = row_pos as usize;
 
         let col_pos = match self.col_s_list[row_pos].binary_search(&cur_block[0]) {
@@ -223,8 +225,13 @@ impl<'a> TrafficModel<'a> {
             reduction_window: default_reduction_window.clone(),
             pe_num: pe_num,
             lane_num: lane_num,
-            fiber_cache: PriorityCache::new(cache_size, word_byte, output_base_addr,
-                b_mem, psum_mem),
+            fiber_cache: PriorityCache::new(
+                cache_size,
+                word_byte,
+                output_base_addr,
+                b_mem,
+                psum_mem,
+            ),
             pes: vec![
                 PE {
                     reduction_window: default_reduction_window.clone(),
@@ -258,7 +265,10 @@ impl<'a> TrafficModel<'a> {
         self.exec_round = 0;
         loop {
             println!("----");
-            println!("merge counter: {}, merge period: {}", self.merge_counter, self.merge_period);
+            println!(
+                "merge counter: {}, merge period: {}",
+                self.merge_counter, self.merge_period
+            );
             self.exec_round += 1;
             // Assign jobs to PEs. If no jobs can be assigned, end execution.
             if !self.assign_jobs() {
@@ -336,7 +346,7 @@ impl<'a> TrafficModel<'a> {
                     for (row_pos, row) in rowidxs.iter().enumerate() {
                         // println!("row: {}", row);
 
-                        // // Merge scheme 1: 
+                        // // Merge scheme 1:
                         // if output_fibers[row_pos].is_some()
                         //     && !self.is_window_valid(
                         //         *row,
@@ -376,18 +386,19 @@ impl<'a> TrafficModel<'a> {
                         // Merge scheme 3:
                         // When reaches the merge period.
                         if output_fibers[row_pos].is_some()
-                            && self.merge_counter == self.merge_period - 1 {
+                            && self.merge_counter == self.merge_period - 1
+                        {
                             self.merge_queue.push(*row);
                         }
 
                         if output_fibers[row_pos].is_some()
-                        && !self.is_window_valid(
-                            *row,
-                            1,
-                            pe.col_s + pe.reduction_window[0],
-                            pe.cur_block.col_s,
-                            pe.cur_block.width,
-                        )
+                            && !self.is_window_valid(
+                                *row,
+                                1,
+                                pe.col_s + pe.reduction_window[0],
+                                pe.cur_block.col_s,
+                                pe.cur_block.width,
+                            )
                         {
                             let tracker = self.merge_trackers.get_mut(row).unwrap();
                             // Unregister current computed block from the merge tracker.
@@ -411,12 +422,20 @@ impl<'a> TrafficModel<'a> {
                 self.write_psum(rowidxs, output_fibers);
             }
 
-            println!("Cache read_count: + {} -> {}, write_count: + {} -> {}",
-                self.fiber_cache.read_count - prev_cache_read_count, self.fiber_cache.read_count,
-                self.fiber_cache.write_count - prev_cache_write_count, self.fiber_cache.write_count);
-            println!("Cache occp: {} in {}, psum_occp: {}, b_occp: {}",
-                self.fiber_cache.cur_num, self.fiber_cache.capability,
-                self.fiber_cache.psum_occp, self.fiber_cache.b_occp);
+            println!(
+                "Cache read_count: + {} -> {}, write_count: + {} -> {}",
+                self.fiber_cache.read_count - prev_cache_read_count,
+                self.fiber_cache.read_count,
+                self.fiber_cache.write_count - prev_cache_write_count,
+                self.fiber_cache.write_count
+            );
+            println!(
+                "Cache occp: {} in {}, psum_occp: {}, b_occp: {}",
+                self.fiber_cache.cur_num,
+                self.fiber_cache.capability,
+                self.fiber_cache.psum_occp,
+                self.fiber_cache.b_occp
+            );
             println!("Cache miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}",
                 self.fiber_cache.miss_count - prev_miss_count, self.fiber_cache.miss_count,
                 self.fiber_cache.b_evict_count - prev_b_evict_count, self.fiber_cache.b_evict_count,
@@ -454,7 +473,8 @@ impl<'a> TrafficModel<'a> {
             let psum_addrs = self.output_trackers.get(&rowid).unwrap();
             if psum_addrs.len() == 1 {
                 if self.merge_trackers[&rowid].finished
-                && self.merge_trackers[&rowid].blocks.len() == 0 {
+                    && self.merge_trackers[&rowid].blocks.len() == 0
+                {
                     println!(
                         "Assign jobs: swapout addr {} of {}",
                         psum_addrs[0], self.merge_queue[i]
@@ -703,7 +723,7 @@ impl<'a> TrafficModel<'a> {
     /// For now we only support adjust block when finishing traverse over K dim.
     fn adjust_block(&mut self, cur_idx: [usize; 2]) {
         match self.accelerator {
-            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {},
+            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {}
             Accelerator::NewOmega => {
                 let block_adjust_scheme = 3;
                 match block_adjust_scheme {
@@ -718,7 +738,9 @@ impl<'a> TrafficModel<'a> {
                         // We look at the neighbor blocks and find the block with the largest total reuse.
                         let max_reuse_block = neighbor_blocks[neighbor_blocks
                             .iter()
-                            .map(|x| self.exec_trackers[x].c_reuse() + self.exec_trackers[x].b_reuse())
+                            .map(|x| {
+                                self.exec_trackers[x].c_reuse() + self.exec_trackers[x].b_reuse()
+                            })
                             .position_max_by(|a, b| a.partial_cmp(b).unwrap())
                             .unwrap()];
 
@@ -734,7 +756,7 @@ impl<'a> TrafficModel<'a> {
                                 self.block_shape[1] *= 2;
                             }
                         }
-                    },
+                    }
                     1 => {
                         // Scheme 1: Based on the reuse of the above execution.
                         let above_block = self.block_topo.find_above(&cur_idx);
@@ -757,21 +779,26 @@ impl<'a> TrafficModel<'a> {
                                 self.block_shape[1] *= 2;
                             }
                         }
-                    },
+                    }
                     2 => {
                         // Scheme 2: Based on the reuse of the last two block execution.
                         let n1_block = self.block_topo.find_above(&cur_idx);
-                        if n1_block.is_none() { return; }
+                        if n1_block.is_none() {
+                            return;
+                        }
                         let n1_block = n1_block.unwrap();
                         let n1_row_num = cur_idx[1] - n1_block[1];
 
                         let n2_block = self.block_topo.find_above(&n1_block);
-                        if n2_block.is_none() { return; }
+                        if n2_block.is_none() {
+                            return;
+                        }
                         let n2_block = n2_block.unwrap();
                         let n2_row_num = n1_block[1] - n2_block[1];
 
-                        if self.exec_trackers[&n1_block].b_reuse() as f32 / n1_row_num as f32 >=
-                            self.exec_trackers[&n2_block].b_reuse() as f32 / n2_row_num as f32 {
+                        if self.exec_trackers[&n1_block].b_reuse() as f32 / n1_row_num as f32
+                            >= self.exec_trackers[&n2_block].b_reuse() as f32 / n2_row_num as f32
+                        {
                             if n1_row_num >= n2_row_num {
                                 self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
                             } else {
@@ -784,32 +811,42 @@ impl<'a> TrafficModel<'a> {
                                 self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
                             }
                         }
-                    },
+                    }
                     3 => {
                         // Scheme 3: Based on the cost of the last two block execution.
                         let n1_block = self.block_topo.find_above(&cur_idx);
-                        if n1_block.is_none() { return; }
+                        if n1_block.is_none() {
+                            return;
+                        }
                         let n1_block = n1_block.unwrap();
                         let n1_row_num = cur_idx[1] - n1_block[1];
-                        let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x|
-                            s + self.a_mem.indptr[x+1] - self.a_mem.indptr[x]);
+                        let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x| {
+                            s + self.a_mem.indptr[x + 1] - self.a_mem.indptr[x]
+                        });
 
                         let n2_block = self.block_topo.find_above(&n1_block);
-                        if n2_block.is_none() { return; }
+                        if n2_block.is_none() {
+                            return;
+                        }
                         let n2_block = n2_block.unwrap();
                         let n2_row_num = n1_block[1] - n2_block[1];
-                        let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x|
-                            s + self.a_mem.indptr[x+1] - self.a_mem.indptr[x]);
+                        let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| {
+                            s + self.a_mem.indptr[x + 1] - self.a_mem.indptr[x]
+                        });
 
-                        let n1_cost = self.exec_trackers[&n1_block].miss_size * 100 +
-                            self.exec_trackers[&n1_block].psum_rw_size;
-                        let n2_cost = self.exec_trackers[&n2_block].miss_size * 100 +
-                            self.exec_trackers[&n2_block].psum_rw_size;
+                        let n1_cost = self.exec_trackers[&n1_block].miss_size * 100
+                            + self.exec_trackers[&n1_block].psum_rw_size;
+                        let n2_cost = self.exec_trackers[&n2_block].miss_size * 100
+                            + self.exec_trackers[&n2_block].psum_rw_size;
 
-                        println!("n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
-                            n1_cost, n1_ele_size, n2_cost, n2_ele_size);
+                        println!(
+                            "n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
+                            n1_cost, n1_ele_size, n2_cost, n2_ele_size
+                        );
 
-                        if (n1_cost as f32 / n1_ele_size as f32) <= (n2_cost as f32 / n2_ele_size as f32) {
+                        if (n1_cost as f32 / n1_ele_size as f32)
+                            <= (n2_cost as f32 / n2_ele_size as f32)
+                        {
                             if n1_row_num >= n2_row_num {
                                 self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
                             } else {
@@ -825,7 +862,6 @@ impl<'a> TrafficModel<'a> {
                     }
                     _ => panic!("Invalid merge scheme:{}", block_adjust_scheme),
                 }
-
             }
         }
     }
@@ -843,7 +879,7 @@ impl<'a> TrafficModel<'a> {
                 let mut reduction_window: [usize; 2];
                 // // window adjust scheme 0 that reduction window is decoupled from block.
                 // let neighbor_blocks = self.get_neighbor_blocks(&cur_idx);
-        
+
                 // // If no neighbor blocks, then use the default reduction window shape.
                 // if neighbor_blocks.len() == 0 {
                 //     return [self.lane_num, 1];
@@ -854,11 +890,11 @@ impl<'a> TrafficModel<'a> {
                 //     .map(|x| self.exec_trackers[x].c_reuse() + self.exec_trackers[x].b_reuse())
                 //     .position_max_by(|a, b| a.partial_cmp(b).unwrap())
                 //     .unwrap()];
-        
+
                 // let cr = self.exec_trackers[&max_reuse_block].c_reuse();
                 // let br = self.exec_trackers[&max_reuse_block].b_reuse();
                 // reduction_window = self.exec_trackers[&max_reuse_block].window;
-        
+
                 // if cr >= br {
                 //     if reduction_window[1] > 1 && reduction_window[0] * 2 <= block_shape[0] {
                 //         reduction_window[1] /= 2;
@@ -1045,7 +1081,8 @@ impl<'a> TrafficModel<'a> {
             println!("write_psum: {:?}", self.output_trackers[&rowidx]);
             let mut output_fiber = output_fiber.unwrap();
             output_fiber.rowptr = self.output_base_addr;
-            self.fiber_cache.write(output_fiber, [self.output_base_addr, self.output_base_addr]);
+            self.fiber_cache
+                .write(output_fiber, [self.output_base_addr, self.output_base_addr]);
             self.output_base_addr += 1;
         }
     }

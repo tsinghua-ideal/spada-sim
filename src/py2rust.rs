@@ -1,10 +1,11 @@
-use crate::gemm::{CsrTuple, GEMM};
+use crate::gemm::{CsrTuple, GEMMRawTuple, GEMM};
 use pyo3::{prelude::*, types::PyModule};
+use sprs::CsMat;
 
 pub fn load_pickled_gemms(gemm_fp: &str, gemm_nm: &str) -> PyResult<GEMM> {
     let code = r#"
 def retrieve_pickled_csr(pickle_gemm_fp, pickle_gemm_name):
-    print('--- Python Interface ---')
+    print('---- Python Interface ----')
     import pickle
     import numpy as np
     from scipy.sparse import coo_matrix, csr_matrix, csc_matrix
@@ -45,7 +46,7 @@ def retrieve_pickled_csr(pickle_gemm_fp, pickle_gemm_name):
 
     Python::with_gil(|py| {
         let load_gemm_from_path = PyModule::from_code(py, code, file_name, module_name).unwrap();
-        let csr_tuple: CsrTuple = load_gemm_from_path
+        let csr_tuple: GEMMRawTuple = load_gemm_from_path
             .getattr("retrieve_pickled_csr")
             .unwrap()
             .call1((gemm_fp, gemm_nm))
@@ -55,5 +56,41 @@ def retrieve_pickled_csr(pickle_gemm_fp, pickle_gemm_name):
         // println!("csr_tuple:\n {:#?}", csr_tuple);
         let gemm = GEMM::new(gemm_nm, csr_tuple);
         Ok(gemm)
+    })
+}
+
+pub fn load_mm_mat(dir_path: &str, gemm_nm: &str) -> PyResult<CsMat<f64>> {
+    let code = r#"
+def retrieve_mm_mat(dir_fp, mat_name):
+    print('---- Python Interface ----')
+    import pickle
+    import numpy as np
+    from scipy import io as spio
+    from scipy.sparse import csr_matrix
+    print(f'% Load {mat_name} from {dir_fp}')
+    mat_path = os.path.join(dir_fp, mat_name + '.mtx')
+    with open(mat_path, 'r') as f:
+        matrix = spio.mmread(f)
+        shape = matrix.shape
+        data = matrix.data
+        indices = matrix.indices
+        indptr = matrix.indptr
+        return (shape, indptr, indices, data)
+    "#;
+
+    let file_name = "retrieve_mm_mat.py";
+    let module_name = "retrieve_mm_mat";
+
+    Python::with_gil(|py| {
+        let load_mm_from_path = PyModule::from_code(py, code, file_name, module_name).unwrap();
+        let ct: CsrTuple = load_mm_from_path
+            .getattr("retrieve_mm_mat")
+            .unwrap()
+            .call1((dir_path, gemm_nm))
+            .unwrap()
+            .extract()
+            .unwrap();
+        let csrmat = CsMat::new(ct.0, ct.1, ct.2, ct.3);
+        Ok(csrmat)
     })
 }

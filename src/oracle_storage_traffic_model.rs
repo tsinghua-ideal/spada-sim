@@ -1,12 +1,18 @@
-use std::{borrow::Borrow, cmp::{max, min}, collections::{HashMap, VecDeque}, hash::Hash, ops::Range};
+use std::{
+    borrow::Borrow,
+    cmp::{max, min},
+    collections::{HashMap, VecDeque},
+    hash::Hash,
+    ops::Range,
+};
 
-use itertools::{izip, merge, merge_join_by, Itertools, Merge, MergeJoinBy};
-use storage::{LRUCache, VectorStorage};
 use crate::frontend::Accelerator;
 use crate::{
     print_type_of,
-    storage::{self, CsrMatStorage, CsrRow, StorageAPI, StorageError, Snapshotable},
+    storage::{self, CsrMatStorage, CsrRow, Snapshotable, StorageAPI, StorageError},
 };
+use itertools::{izip, merge, merge_join_by, Itertools, Merge, MergeJoinBy};
+use storage::{LRUCache, VectorStorage};
 
 #[derive(Debug, Clone)]
 struct PE {
@@ -315,7 +321,7 @@ impl<'a> TrafficModel<'a> {
                     for (row_pos, row) in rowidxs.iter().enumerate() {
                         // println!("row: {}", row);
 
-                        // // Merge scheme 1: 
+                        // // Merge scheme 1:
                         // if output_fibers[row_pos].is_some()
                         //     && !self.is_window_valid(
                         //         *row,
@@ -414,7 +420,8 @@ impl<'a> TrafficModel<'a> {
             // }
             if psum_addrs.len() == 1 {
                 if self.merge_trackers[&rowid].finished
-                && self.merge_trackers[&rowid].blocks.len() == 0 {
+                    && self.merge_trackers[&rowid].blocks.len() == 0
+                {
                     println!(
                         "Assign jobs: swapout addr {} of {}",
                         psum_addrs[0], self.merge_queue[i]
@@ -947,8 +954,14 @@ impl<'a> TrafficModel<'a> {
 
             let access_count = b_read_diff + psum_read_diff + psum_write_diff;
 
-            println!("Block: {:?} total_diff: {} b_read_diff: {} psum_read_diff: {} psum_write_diff: {}",
-                block.get_idx(), access_count, b_read_diff, psum_read_diff, psum_write_diff);
+            println!(
+                "Block: {:?} total_diff: {} b_read_diff: {} psum_read_diff: {} psum_write_diff: {}",
+                block.get_idx(),
+                access_count,
+                b_read_diff,
+                psum_read_diff,
+                psum_write_diff
+            );
 
             if access_count < opt_access_count {
                 opt_access_count = access_count;
@@ -979,7 +992,7 @@ impl<'a> TrafficModel<'a> {
                 reduction_window[1],
                 col_s + reduction_window[0],
                 block.col_s,
-                block.width
+                block.width,
             ) {
                 col_s += reduction_window[0];
             } else {
@@ -993,7 +1006,8 @@ impl<'a> TrafficModel<'a> {
                     reduction_window[1],
                     col_s,
                     block.col_s,
-                    block.width) {
+                    block.width,
+                ) {
                     row_s += reduction_window[1];
                     if row_s >= block.row_s + block.height {
                         break;
@@ -1003,12 +1017,7 @@ impl<'a> TrafficModel<'a> {
 
             println!(
                 "Try exec: shift to row_s {} col_s {}, block: row_s {} col_s {} height {} width {}",
-                row_s,
-                col_s,
-                block.row_s,
-                block.col_s,
-                block.height,
-                block.width
+                row_s, col_s, block.row_s, block.col_s, block.height, block.width
             );
 
             // Simple fetch data.
@@ -1024,9 +1033,7 @@ impl<'a> TrafficModel<'a> {
                 if self.a_mem.get_rowptr(*rowidx + 1) > self.a_mem.get_rowptr(*rowidx) + col_s {
                     let ele_num = min(
                         reduction_window[0],
-                        self.a_mem.get_rowptr(*rowidx + 1)
-                            - self.a_mem.get_rowptr(*rowidx)
-                            - col_s,
+                        self.a_mem.get_rowptr(*rowidx + 1) - self.a_mem.get_rowptr(*rowidx) - col_s,
                     );
                     r_sfs = self.a_mem.read(*rowidx, col_s, ele_num).unwrap();
                 }
@@ -1062,8 +1069,9 @@ impl<'a> TrafficModel<'a> {
             }
 
             // Simplified write back. Not consider the complex cache swap out operations.
-            self.fiber_cache.write_count +=
-                psums.iter().fold(0, |acc, c| acc+c.as_ref().map_or(0, |v|v.len()));
+            self.fiber_cache.write_count += psums
+                .iter()
+                .fold(0, |acc, c| acc + c.as_ref().map_or(0, |v| v.len()));
         }
     }
 }
