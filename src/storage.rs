@@ -407,6 +407,16 @@ impl VectorStorage {
             }
         }
     }
+
+    pub fn consume(&mut self, row_ptr: usize) -> Result<CsrRow, StorageError> {
+        match self.data.remove(&row_ptr) {
+            Some(cr) => {
+                if self.track_count { self.read_count += cr.size(); }
+                Ok(cr)
+            }
+            None => Err(StorageError::ReadOverBoundError(format!("Invalid rowptr: {}", row_ptr)))
+        }
+    }
 }
 
 pub struct LRUCache<'a> {
@@ -1501,7 +1511,7 @@ impl<'a> PriorityCache<'a> {
             }
             Err(_) => {
                 if self.is_psum_row(rowid) {
-                    match self.psum_mem.read_row(rowid) {
+                    match self.psum_mem.consume(rowid) {
                         Ok(csrrow) => {
                             if self.track_count {
                                 self.read_count += csrrow.size();
