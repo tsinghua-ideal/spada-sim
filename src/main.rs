@@ -21,7 +21,7 @@ use crate::components::StreamBuffer;
 use crate::frontend::{parse_config, Accelerator, Cli, Simulator, WorkloadCate};
 use crate::pipeline_simu::PipelineSimulator;
 use crate::preprocessing::affinity_based_row_reordering;
-use crate::py2rust::load_pickled_gemms;
+use crate::py2rust::{load_pickled_gemms, load_mm_mat};
 use crate::storage::CsrMatStorage;
 use b_reuse_counter::BReuseCounter;
 use structopt::StructOpt;
@@ -44,12 +44,20 @@ fn main() {
     let omega_config = parse_config("omega_config_1mb.json").unwrap();
     let cli: Cli = Cli::from_args();
 
-    let gemm_fp = match cli.category {
-        WorkloadCate::NN => omega_config.nn_filepath,
-        WorkloadCate::SS => omega_config.ss_filepath,
-        WorkloadCate::Desired => omega_config.desired_filepath,
+    let gemm: GEMM;
+    match cli.category {
+        WorkloadCate::NN => {
+            gemm = load_pickled_gemms(&omega_config.nn_filepath, &cli.workload).unwrap();
+        },
+        WorkloadCate::SS => {
+            let mat = load_mm_mat(&omega_config.ss_filepath, &cli.workload).unwrap();
+            gemm = GEMM::from_mat(&cli.workload, mat);
+            // gemm = load_pickled_gemms(&omega_config.ss_filepath, &cli.workload).unwrap();
+        },
+        WorkloadCate::Desired => {
+            gemm = load_pickled_gemms(&omega_config.desired_filepath, &cli.workload).unwrap();
+        }
     };
-    let gemm = load_pickled_gemms(&gemm_fp, &cli.workload).unwrap();
     let a_avg_row_len = gemm.a.nnz() / gemm.a.rows();
     let b_avg_row_len = gemm.b.nnz() / gemm.b.rows();
     println!("Get GEMM {}", gemm.name);
@@ -59,7 +67,7 @@ fn main() {
         a_avg_row_len, b_avg_row_len
     );
 
-    let validating_product_mat = (&gemm.a * &gemm.b).to_csr();
+    // let validating_product_mat = (&gemm.a * &gemm.b).to_csr();
 
     match cli.simulator {
         Simulator::TrafficModel => {
@@ -166,20 +174,20 @@ fn main() {
                 println!("{}", &result[idx]);
             }
 
-            println!("----Validating output product matrix");
-            let v_indptr = validating_product_mat.indptr().as_slice().unwrap().to_vec();
-            let v_data = validating_product_mat.data().to_vec();
-            let v_indices = validating_product_mat.indices().to_vec();
+            // println!("----Validating output product matrix");
+            // let v_indptr = validating_product_mat.indptr().as_slice().unwrap().to_vec();
+            // let v_data = validating_product_mat.data().to_vec();
+            // let v_indices = validating_product_mat.indices().to_vec();
 
-            for idx in 0..min(v_indptr.len() - 1, 10) {
-                let sliced_len = min(v_indptr[idx + 1] - v_indptr[idx], 5);
-                let sliced_indptr = &v_indices[v_indptr[idx]..v_indptr[idx] + sliced_len];
-                let sliced_data = &v_data[v_indptr[idx]..v_indptr[idx] + sliced_len];
-                println!(
-                    "rowptr: {} indptr: {:?} data: {:?}",
-                    &idx, sliced_indptr, sliced_data
-                );
-            }
+            // for idx in 0..min(v_indptr.len() - 1, 10) {
+            //     let sliced_len = min(v_indptr[idx + 1] - v_indptr[idx], 5);
+            //     let sliced_indptr = &v_indices[v_indptr[idx]..v_indptr[idx] + sliced_len];
+            //     let sliced_data = &v_data[v_indptr[idx]..v_indptr[idx] + sliced_len];
+            //     println!(
+            //         "rowptr: {} indptr: {:?} data: {:?}",
+            //         &idx, sliced_indptr, sliced_data
+            //     );
+            // }
         }
 
         Simulator::BReuseCounter => {
@@ -191,21 +199,21 @@ fn main() {
                 omega_config.word_byte,
             );
             let block_num = 8;
-            // let oracle_fetch = b_reuse_counter.oracle_fetch();
+            let oracle_fetch = b_reuse_counter.oracle_fetch();
             // let b_row_len = b_reuse_counter.collect_row_length();
             // let avg_reuse_distance = b_reuse_counter.reuse_row_distance();
-            // let oracle_blocked_fetch = b_reuse_counter.oracle_blocked_fetch();
+            let oracle_blocked_fetch = b_reuse_counter.oracle_blocked_fetch();
             // let cache_restricted_collect = b_reuse_counter.cached_fetch();
             // let blocked_fetch = b_reuse_counter.blocked_fetch(block_num);
             // let reuse_dist_guided_fetch = b_reuse_counter.reuse_dist_guided_blocked_fetch(block_num, 4);
             // let affinity_collect = b_reuse_counter.neighbor_row_affinity();
             // let improved_reuse = b_reuse_counter.improved_reuse(block_num);
 
-            let mut scanned_b_fetch = vec![];
-            for row_num in vec![1, 2, 4, 8, 16, 32, 64] {
-                let b_fetch = b_reuse_counter.blocked_fetch(row_num);
-                scanned_b_fetch.push(b_fetch.values().sum::<usize>());
-            }
+            // let mut scanned_b_fetch = vec![];
+            // for row_num in vec![1, 2, 4, 8, 16, 32, 64] {
+            //     let b_fetch = b_reuse_counter.blocked_fetch(row_num);
+            //     scanned_b_fetch.push(b_fetch.values().sum::<usize>());
+            // }
 
             println!("-----Result-----");
             // println!("Row length dist: entries: {} >=256: {} >=180: {} >=128: {} >=90: {}",
@@ -272,13 +280,13 @@ fn main() {
             // //     affinity_collect.values().filter(|&x| *x >= 16).count(),
             // //     affinity_collect.values().filter(|&x| *x >= 4).count());
             // println!("Nonzero entries: {}", b_reuse_counter.b_mem.get_nonzero());
-            // println!("Oracle fetch: {}", oracle_fetch.len());
-            // println!("Oracle blocked fetch: {}", oracle_blocked_fetch.values().sum::<usize>());
+            println!("Oracle fetch: {}", oracle_fetch.len());
+            println!("Oracle blocked fetch: {}", oracle_blocked_fetch.values().sum::<usize>());
             // println!("Cache restricted fetch: {}", cache_restricted_collect.values().sum::<usize>());
             // println!("{} blocked fetch: {}", block_num, blocked_fetch.values().sum::<usize>());
             // println!("Total reuse: {} improved reuse: {}, improved ratio: {:.2}", improved_reuse.0, improved_reuse.1, improved_reuse.2);
             // println!("Reuse dist guided fetch: {}", reuse_dist_guided_fetch.values().sum::<usize>());
-            println!("{:?}", scanned_b_fetch);
+            // println!("{:?}", scanned_b_fetch);
         }
 
         Simulator::AccurateSimu => {

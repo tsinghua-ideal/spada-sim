@@ -1,5 +1,5 @@
 {
-    "ss_filepath": "../adaptive_sparse_accelerator/workload/pickled_gemms/SS_gemms_01_27_20_37.pkl",
+    "ss_filepath": "../adaptive_sparse_accelerator/workload/suitesparse_matrices/all",
     "nn_filepath": "../adaptive_sparse_accelerator/workload/pickled_gemms/NN_gemms_02_01_21_31.pkl",
     "desired_filepath": "../adaptive_sparse_accelerator/workload/pickled_gemms/Desired_gemms_06_05_11_08.pkl",
     "pe_num": 1,

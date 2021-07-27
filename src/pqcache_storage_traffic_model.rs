@@ -134,7 +134,7 @@ struct ExecTracker {
     pub dedup_fiber_size: usize,
     pub output_fiber_size: usize,
     pub miss_size: usize,
-    pub psum_rw_size: usize,
+    pub psum_rw_size: [usize; 2],
 }
 
 impl ExecTracker {
@@ -146,7 +146,7 @@ impl ExecTracker {
             dedup_fiber_size: 0,
             output_fiber_size: 0,
             miss_size: 0,
-            psum_rw_size: 0,
+            psum_rw_size: [0, 0],
         }
     }
 
@@ -287,6 +287,10 @@ impl<'a> TrafficModel<'a> {
 
             // Each PE execute a window.
             for i in 0..self.pe_num {
+                let tmp_b_r = self.fiber_cache.b_mem.read_count;
+                let tmp_psum_mem_rw = self.fiber_cache.psum_mem.read_count + self.fiber_cache.psum_mem.write_count;
+                let tmp_cache_rw = self.fiber_cache.read_count + self.fiber_cache.write_count;
+
                 // Find if the pe is uninitialized.
                 if !self.pes[i].merge_mode && (self.pes[i].reduction_window[0] == 0) {
                     continue;
@@ -335,12 +339,12 @@ impl<'a> TrafficModel<'a> {
                 }
 
                 // Update work mode.
-                let pe = &self.pes[i];
-                if pe.merge_mode {
+                let pe = & self.pes[i];
+                if self.pes[i].merge_mode {
                     for row in rowidxs.iter() {
                         self.merge_queue.push(*row);
                     }
-                } else if !pe.merge_mode && pe.cur_block.height != 0 {
+                } else if !self.pes[i].merge_mode && self.pes[i].cur_block.height != 0 {
                     // Finish one traverse over current rows.
                     // Add the finished rows into merge queue and turn into merge mode.
                     for (row_pos, row) in rowidxs.iter().enumerate() {
@@ -351,14 +355,14 @@ impl<'a> TrafficModel<'a> {
                         //     && !self.is_window_valid(
                         //         *row,
                         //         1,
-                        //         pe.col_s + pe.reduction_window[0],
-                        //         pe.cur_block.col_s,
-                        //         pe.cur_block.width,
+                        //         self.pes[i].col_s + self.pes[i].reduction_window[0],
+                        //         self.pes[i].cur_block.col_s,
+                        //         self.pes[i].cur_block.width,
                         //     )
                         // {
                         //     let tracker = self.merge_trackers.get_mut(row).unwrap();
                         //     // Unregister current computed block from the merge tracker.
-                        //     tracker.blocks.retain(|x| *x != pe.cur_block.get_idx());
+                        //     tracker.blocks.retain(|x| *x != self.pes[i].cur_block.get_idx());
                         //     // If all related blocks are computed, then start to merge all psums of
                         //     // the row.
                         //     if tracker.finished && tracker.blocks.len() == 0 {
@@ -372,14 +376,14 @@ impl<'a> TrafficModel<'a> {
                         //     && !self.is_window_valid(
                         //         *row,
                         //         1,
-                        //         pe.col_s + pe.reduction_window[0],
-                        //         pe.cur_block.col_s,
-                        //         pe.cur_block.width,
+                        //         self.pes[i].col_s + self.pes[i].reduction_window[0],
+                        //         self.pes[i].cur_block.col_s,
+                        //         self.pes[i].cur_block.width,
                         //     )
                         // {
                         //     let tracker = self.merge_trackers.get_mut(row).unwrap();
                         //     // Unregister current computed block from the merge tracker.
-                        //     tracker.blocks.retain(|x| *x != pe.cur_block.get_idx());
+                        //     tracker.blocks.retain(|x| *x != self.pes[i].cur_block.get_idx());
                         //     self.merge_queue.push(*row);
                         // }
 
@@ -395,31 +399,33 @@ impl<'a> TrafficModel<'a> {
                             && !self.is_window_valid(
                                 *row,
                                 1,
-                                pe.col_s + pe.reduction_window[0],
-                                pe.cur_block.col_s,
-                                pe.cur_block.width,
+                                self.pes[i].col_s + self.pes[i].reduction_window[0],
+                                self.pes[i].cur_block.col_s,
+                                self.pes[i].cur_block.width,
                             )
                         {
                             let tracker = self.merge_trackers.get_mut(row).unwrap();
+                            let cur_block_idx = self.pes[i].cur_block.get_idx();
                             // Unregister current computed block from the merge tracker.
-                            tracker.blocks.retain(|x| *x != pe.cur_block.get_idx());
+                            tracker.blocks.retain(|x| *x != cur_block_idx);
                             self.merge_queue.push(*row);
                         }
                     }
                     self.merge_counter = (self.merge_counter + 1) % self.merge_period;
                 }
 
-                for csrrow in output_fibers.iter() {
-                    if let Some(cr) = csrrow {
-                        self.exec_trackers
-                            .get_mut(&pe.cur_block.get_idx())
-                            .unwrap()
-                            .psum_rw_size += cr.size();
-                    }
-                }
-
                 // Writeback psums.
                 self.write_psum(rowidxs, output_fibers);
+
+                // Update exec_counter.
+                let tracker = self.exec_trackers
+                    .get_mut(&self.pes[i].cur_block.get_idx())
+                    .unwrap();
+                tracker.miss_size += self.fiber_cache.b_mem.read_count - tmp_b_r;
+                tracker.psum_rw_size[0] += self.fiber_cache.psum_mem.read_count +
+                    self.fiber_cache.psum_mem.write_count - tmp_psum_mem_rw;
+                tracker.psum_rw_size[1] += self.fiber_cache.read_count +
+                    self.fiber_cache.write_count - tmp_cache_rw;
             }
 
             println!(
@@ -834,10 +840,12 @@ impl<'a> TrafficModel<'a> {
                             s + self.a_mem.indptr[x + 1] - self.a_mem.indptr[x]
                         });
 
-                        let n1_cost = self.exec_trackers[&n1_block].miss_size * 100
-                            + self.exec_trackers[&n1_block].psum_rw_size;
-                        let n2_cost = self.exec_trackers[&n2_block].miss_size * 100
-                            + self.exec_trackers[&n2_block].psum_rw_size;
+                        let n1_cost = (self.exec_trackers[&n1_block].miss_size +
+                            self.exec_trackers[&n1_block].psum_rw_size[0]) * 100
+                            + self.exec_trackers[&n1_block].psum_rw_size[1];
+                        let n2_cost = (self.exec_trackers[&n2_block].miss_size +
+                            self.exec_trackers[&n2_block].psum_rw_size[0]) * 100
+                            + self.exec_trackers[&n2_block].psum_rw_size[1];
 
                         println!(
                             "n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
@@ -952,11 +960,6 @@ impl<'a> TrafficModel<'a> {
                 let mut sfs = vec![];
                 for colid in psums.drain(0..used_num) {
                     let csrrow = self.fiber_cache.consume(colid).unwrap();
-                    // Update tracker's psum rw counter.
-                    self.exec_trackers
-                        .get_mut(&pe.cur_block.get_idx())
-                        .unwrap()
-                        .psum_rw_size += csrrow.size();
                     fbs.push(csrrow);
                     sfs.push((colid, 1f64));
                 }
@@ -998,13 +1001,6 @@ impl<'a> TrafficModel<'a> {
                         let missed = !self.fiber_cache.rowmap.contains_key(colid);
                         match self.fiber_cache.read([*rowidx, *colid]) {
                             Some(csrrow) => {
-                                // Update tracker's miss_counter.
-                                if missed {
-                                    self.exec_trackers
-                                        .get_mut(&pe.cur_block.get_idx())
-                                        .unwrap()
-                                        .miss_size += csrrow.size();
-                                }
                                 broadcast_cache.insert(*colid, csrrow.clone());
                                 fbs.push(csrrow);
                                 sfs.push((*colid, *value));

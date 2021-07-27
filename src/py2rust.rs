@@ -63,6 +63,7 @@ pub fn load_mm_mat(dir_path: &str, gemm_nm: &str) -> PyResult<CsMat<f64>> {
     let code = r#"
 def retrieve_mm_mat(dir_fp, mat_name):
     print('---- Python Interface ----')
+    import os
     import pickle
     import numpy as np
     from scipy import io as spio
@@ -70,7 +71,7 @@ def retrieve_mm_mat(dir_fp, mat_name):
     print(f'% Load {mat_name} from {dir_fp}')
     mat_path = os.path.join(dir_fp, mat_name + '.mtx')
     with open(mat_path, 'r') as f:
-        matrix = spio.mmread(f)
+        matrix = spio.mmread(f).tocsr()
         shape = matrix.shape
         data = matrix.data
         indices = matrix.indices
