@@ -202,6 +202,7 @@ pub struct TrafficModel<'a> {
     /// Use merge_period to control merge scheme 3.
     merge_counter: usize,
     merge_period: usize,
+    b_sparsity: f32,
 }
 
 impl<'a> TrafficModel<'a> {
@@ -221,6 +222,7 @@ impl<'a> TrafficModel<'a> {
         // Init from the inner-product dataflow.
         // Can be changed to be adaptive.
         TrafficModel {
+            b_sparsity: 1.0 - b_mem.data.len() as f32 / (b_mem.get_row_len() * b_mem.mat_shape[0]) as f32,
             a_traversed: false,
             reduction_window: default_reduction_window.clone(),
             pe_num: pe_num,
@@ -731,7 +733,7 @@ impl<'a> TrafficModel<'a> {
         match self.accelerator {
             Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {}
             Accelerator::NewOmega => {
-                let block_adjust_scheme = 3;
+                let block_adjust_scheme = 4;
                 match block_adjust_scheme {
                     0 => {
                         // Scheme 0: Based on the reuse of the previous exeuction.
@@ -866,6 +868,74 @@ impl<'a> TrafficModel<'a> {
                             } else {
                                 self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
                             }
+                        }
+                    }
+                    4 => {
+                        // Scheme 4: Based on the cost of the last two block execution.
+                        let n1_block = self.block_topo.find_above(&cur_idx);
+                        if n1_block.is_none() {
+                            return;
+                        }
+                        let n1_block = n1_block.unwrap();
+                        let n1_row_num = cur_idx[1] - n1_block[1];
+                        let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x| {
+                            s + self.a_mem.indptr[x + 1] - self.a_mem.indptr[x]
+                        });
+
+                        let n2_block = self.block_topo.find_above(&n1_block);
+                        if n2_block.is_none() {
+                            return;
+                        }
+                        let n2_block = n2_block.unwrap();
+                        let n2_row_num = n1_block[1] - n2_block[1];
+                        let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| {
+                            s + self.a_mem.indptr[x + 1] - self.a_mem.indptr[x]
+                        });
+
+                        let n1_cost = (self.exec_trackers[&n1_block].miss_size +
+                            self.exec_trackers[&n1_block].psum_rw_size[0]) * 100
+                            + self.exec_trackers[&n1_block].psum_rw_size[1];
+                        let n2_cost = (self.exec_trackers[&n2_block].miss_size +
+                            self.exec_trackers[&n2_block].psum_rw_size[0]) * 100
+                            + self.exec_trackers[&n2_block].psum_rw_size[1];
+
+                        let mut max_cachable_row = 0;
+                        let mut exp_psum_size = 0.0;
+                        let mut temp_idx = cur_idx[1];
+                        while exp_psum_size < self.fiber_cache.capability as f32 &&
+                            max_cachable_row <= self.lane_num - 1 &&
+                            temp_idx < self.a_mem.get_row_len() {
+                            max_cachable_row += 1;
+                            let row_num = self.a_mem.indptr[temp_idx+1] - self.a_mem.indptr[temp_idx];
+                            let merged_psum_row = (1.0 - self.b_sparsity.powi(row_num as i32)) * self.fiber_cache.b_mem.mat_shape[0] as f32;
+                            exp_psum_size += merged_psum_row * 2.0;
+                            temp_idx += 1;
+                        }
+
+                        println!(
+                            "n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}, exp_psum_size: {}, max_cachable_row: {}",
+                            n1_cost, n1_ele_size, n2_cost, n2_ele_size, exp_psum_size, max_cachable_row
+                        );
+
+                        if (n1_cost as f32 / n1_ele_size as f32)
+                            <= (n2_cost as f32 / n2_ele_size as f32)
+                        {
+                            if n1_row_num >= n2_row_num {
+                                self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                            } else {
+                                self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                            }
+                        } else {
+                            if n1_row_num >= n2_row_num {
+                                self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                            } else {
+                                self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                            }
+                        }
+
+                        while self.block_shape[1] > max_cachable_row {
+                            if self.block_shape[1] == 1 { break; }
+                            self.block_shape[1] = max(self.block_shape[1] / 2, 1);
                         }
                     }
                     _ => panic!("Invalid merge scheme:{}", block_adjust_scheme),
@@ -1096,7 +1166,8 @@ impl<'a> TrafficModel<'a> {
                 };
                 // let raw_rowid = self.a_mem.row_remap[&rowid];
                 let addrs = self.output_trackers.get(&rowid).unwrap();
-                println!("Get result: row: {} addrs: {:?}", raw_rowid, &addrs);
+                println!("Get result: row: {} row len: {}", raw_rowid,
+                    self.fiber_cache.psum_mem.data[&addrs[0]].size() / 2);
                 assert!(
                     addrs.len() == 1,
                     "Partially merged psums! {:?} of row {}",

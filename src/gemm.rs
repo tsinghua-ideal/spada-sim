@@ -43,7 +43,7 @@ impl GEMM {
         let b_mat = if mat.shape().0 == mat.shape().1 {
             mat.clone()
         } else {
-            mat.clone().transpose_into()
+            mat.clone().transpose_into().to_csr()
         };
         GEMM {
             name: mn.to_owned(),

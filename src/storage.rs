@@ -167,6 +167,7 @@ pub struct CsrMatStorage {
     pub row_remap: HashMap<usize, usize>,
     pub track_count: bool,
     snapshot: Option<(usize, usize)>,
+    pub mat_shape: [usize; 2],
 }
 
 impl StorageAPI for CsrMatStorage {
@@ -260,6 +261,7 @@ impl CsrMatStorage {
                 row_remap: HashMap::new(),
                 track_count: true,
                 snapshot: None,
+                mat_shape: [gemm.a.shape().1, gemm.a.shape().0],
             },
             CsrMatStorage {
                 data: gemm.b.data().to_vec(),
@@ -271,6 +273,7 @@ impl CsrMatStorage {
                 row_remap: HashMap::new(),
                 track_count: true,
                 snapshot: None,
+                mat_shape: [gemm.b.shape().1, gemm.b.shape().0],
             },
         )
     }
@@ -1487,7 +1490,7 @@ impl<'a> PriorityCache<'a> {
 
     pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
         while self.priority_queue.len() > 0 && (self.cur_num + space_required > self.capability) {
-            println!("freeup_space: space_required: {}", space_required);
+            println!("freeup_space: cur_num: {} space_required: {}", self.cur_num, space_required);
             let mut popid: [usize; 2];
             loop {
                 popid = self.priority_queue_pop().unwrap();
