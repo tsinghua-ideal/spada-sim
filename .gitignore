@@ -4,3 +4,5 @@
 perf.*
 *.svg
 *.gz
+sweep_suitesparse
+job2run

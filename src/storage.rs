@@ -13,6 +13,7 @@ use std::{
     ops::Index,
     usize,
 };
+use crate::trace_print;
 
 #[derive(Debug, Clone)]
 pub enum StorageError {
@@ -604,7 +605,7 @@ impl<'a> LRUCache<'a> {
             }
             if self.is_psum_row(popid) {
                 let popped_csrrow = self.rowmap_remove(&popid).unwrap();
-                println!("*freerow {} and get {}", popid, popped_csrrow.size());
+                trace_print!("*freerow {} and get {}", popid, popped_csrrow.size());
                 self.cur_num -= popped_csrrow.size();
                 if self.track_count {
                     self.psum_evict_count += popped_csrrow.size();
@@ -613,7 +614,7 @@ impl<'a> LRUCache<'a> {
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
                 let evict_size = self.rowmap_remove(&popid).unwrap().size();
-                println!("*freerow {} and get {}", popid, evict_size);
+                trace_print!("*freerow {} and get {}", popid, evict_size);
                 self.cur_num -= evict_size;
                 self.b_occp -= evict_size;
                 if self.track_count {
@@ -905,7 +906,7 @@ impl<'a> RandomCache<'a> {
 
             let popped_csrrow = self.rowmap_remove(&popid).unwrap();
             let evict_size = popped_csrrow.size();
-            println!("*freerow {} and get {}", popid, evict_size);
+            trace_print!("*freerow {} and get {}", popid, evict_size);
             self.cur_num -= evict_size;
 
             if self.is_psum_row(popid) {
@@ -1148,7 +1149,7 @@ impl<'a> LRURandomCache<'a> {
             }
             if self.is_psum_row(popid) {
                 let popped_csrrow = self.rowmap_remove(&popid).unwrap();
-                println!("*freerow {} and get {}", popid, popped_csrrow.size());
+                trace_print!("*freerow {} and get {}", popid, popped_csrrow.size());
                 self.cur_num -= popped_csrrow.size();
                 if self.track_count {
                     self.psum_evict_count += popped_csrrow.size();
@@ -1157,7 +1158,7 @@ impl<'a> LRURandomCache<'a> {
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
                 let evict_size = self.rowmap_remove(&popid).unwrap().size();
-                println!("*freerow {} and get {}", popid, evict_size);
+                trace_print!("*freerow {} and get {}", popid, evict_size);
                 self.cur_num -= evict_size;
                 self.b_occp -= evict_size;
                 if self.track_count {
@@ -1490,11 +1491,11 @@ impl<'a> PriorityCache<'a> {
 
     pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
         while self.priority_queue.len() > 0 && (self.cur_num + space_required > self.capability) {
-            println!("freeup_space: cur_num: {} space_required: {}", self.cur_num, space_required);
+            trace_print!("freeup_space: cur_num: {} space_required: {}", self.cur_num, space_required);
             let mut popid: [usize; 2];
             loop {
                 popid = self.priority_queue_pop().unwrap();
-                println!("freeup_space: popid: {:?}", popid);
+                trace_print!("freeup_space: popid: {:?}", popid);
                 if self.valid_pq_row_dict[&popid[1]] == popid[0]
                     && self.rowmap.contains_key(&popid[1])
                 {
@@ -1503,7 +1504,7 @@ impl<'a> PriorityCache<'a> {
             }
             if self.is_psum_row(popid[1]) {
                 let popped_csrrow = self.rowmap_remove(&popid[1]).unwrap();
-                println!("*freerow {:?} and get {}", popid, popped_csrrow.size());
+                trace_print!("*freerow {:?} and get {}", popid, popped_csrrow.size());
                 self.cur_num -= popped_csrrow.size();
                 if self.track_count {
                     self.psum_evict_count += popped_csrrow.size();
@@ -1512,7 +1513,7 @@ impl<'a> PriorityCache<'a> {
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
                 let evict_size = self.rowmap_remove(&popid[1]).unwrap().size();
-                println!("*freerow {:?} and get {}", popid, evict_size);
+                trace_print!("*freerow {:?} and get {}", popid, evict_size);
                 self.cur_num -= evict_size;
                 self.b_occp -= evict_size;
                 if self.track_count {

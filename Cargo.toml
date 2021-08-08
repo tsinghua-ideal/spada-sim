@@ -16,3 +16,7 @@ serde_json = "1.0"
 structopt = "0.3"
 priority-queue = "1.1.1"
 rand = "0.8.4"
+
+[features]
+default = ["trace_exec",]
+trace_exec = []
