@@ -12,6 +12,7 @@ macro_rules! trace_print {
 
 // Non-debug version
 #[cfg(not(feature = "trace_exec"))]
+#[macro_export]
 macro_rules! trace_print {
     ($( $args:expr ),*) => {}
 }

@@ -904,15 +904,19 @@ impl<'a> TrafficModel<'a> {
                         let mut max_cachable_row = 0;
                         let mut exp_psum_size = 0.0;
                         let mut temp_idx = cur_idx[1];
-                        while exp_psum_size < self.fiber_cache.capability as f32 &&
-                            max_cachable_row <= self.lane_num - 1 &&
+                        while max_cachable_row <= self.lane_num - 1 &&
                             temp_idx < self.a_mem.get_row_len() {
-                            max_cachable_row += 1;
                             let row_num = self.a_mem.indptr[temp_idx+1] - self.a_mem.indptr[temp_idx];
                             let merged_psum_row = (1.0 - self.b_sparsity.powi(row_num as i32)) * self.fiber_cache.b_mem.mat_shape[0] as f32;
                             exp_psum_size += merged_psum_row * 2.0;
+                            if exp_psum_size > self.fiber_cache.capability as f32 {
+                                break;
+                            }
+                            max_cachable_row += 1;
                             temp_idx += 1;
                         }
+
+                        max_cachable_row = max(1, max_cachable_row);
 
                         trace_print!(
                             "n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}, exp_psum_size: {}, max_cachable_row: {}",
