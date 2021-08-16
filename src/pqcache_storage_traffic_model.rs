@@ -177,6 +177,77 @@ impl MergeTracker {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct GroupInfo {
+    pub row_range: [usize; 2],
+    pub avg_row_len: usize,
+    pub cost_num: HashMap<usize, [usize; 2]>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GroupTracker {
+    pub groups: Vec<GroupInfo>,
+    pub rgmap: HashMap<usize, usize>,
+}
+
+impl GroupTracker {
+    pub fn new() -> GroupTracker {
+        GroupTracker {
+            groups: vec![],
+            rgmap: HashMap::new(),
+        }
+    }
+
+    pub fn add_group(&mut self, gi: GroupInfo) {
+        self.groups.push(gi);
+        let last_idx = self.groups.len() - 1;
+        for rowidx in self.groups[last_idx].row_range[0]..self.groups[last_idx].row_range[1] {
+            self.rgmap.insert(rowidx, last_idx);
+        }
+    }
+}
+
+pub fn parse_group(matrix: &CsrMatStorage, var_factor: usize) -> GroupTracker {
+    let mut gt = GroupTracker::new();
+    let mut prev_row_len = usize::MAX;
+    let mut row_s = 0;
+
+    // Parse matrix.
+    for idx in 0..matrix.indptr.len() {
+        if idx == matrix.indptr.len() - 1 {
+            // Finish the last group.
+            let gi = GroupInfo {
+                row_range: [row_s, idx],
+                avg_row_len: (matrix.indptr[idx] - matrix.indptr[row_s]) / (idx - row_s),
+                cost_num: HashMap::new(),
+            };
+            gt.add_group(gi);
+        } else {
+            let row_len = matrix.indptr[idx+1] - matrix.indptr[idx];
+            if row_len == 0 {
+                continue;
+            } else if prev_row_len == usize::MAX {
+                // Init the first group.
+                prev_row_len = row_len;
+            } else if prev_row_len * var_factor < row_len || prev_row_len > var_factor * row_len {
+                // Encounter a new group. Save the current one.
+                let gi = GroupInfo {
+                    row_range: [row_s, idx],
+                    avg_row_len: (matrix.indptr[idx] - matrix.indptr[row_s]) / (idx - row_s),
+                    cost_num: HashMap::new(),
+                };
+                gt.add_group(gi);
+                prev_row_len = row_len;
+                row_s = idx;
+            } else {
+                prev_row_len = row_len;
+            }
+        }
+    }
+
+    return gt;
+}
+
 pub struct TrafficModel<'a> {
     a_traversed: bool,
     reduction_window: [usize; 2],
@@ -204,6 +275,9 @@ pub struct TrafficModel<'a> {
     merge_counter: usize,
     merge_period: usize,
     b_sparsity: f32,
+    a_group: GroupTracker,
+    b_group: GroupTracker,
+    row_group: usize,
 }
 
 impl<'a> TrafficModel<'a> {
@@ -220,6 +294,11 @@ impl<'a> TrafficModel<'a> {
         psum_mem: &'a mut VectorStorage,
         accelerator: Accelerator,
     ) -> TrafficModel<'a> {
+        // Preprocessing. Group each matrix's rows by their row lens.
+        let var_factor = 5;
+        let a_group = parse_group(&a_mem, var_factor);
+        let b_group = parse_group(&b_mem, var_factor);
+
         // Init from the inner-product dataflow.
         // Can be changed to be adaptive.
         TrafficModel {
@@ -260,6 +339,9 @@ impl<'a> TrafficModel<'a> {
             merge_pe: 0,
             merge_counter: 0,
             merge_period: lane_num / default_block_shape[1],
+            a_group,
+            b_group,
+            row_group: 0,
         }
     }
 
@@ -420,15 +502,21 @@ impl<'a> TrafficModel<'a> {
                 // Writeback psums.
                 self.write_psum(rowidxs, output_fibers);
 
+                // Calc exec info.
+                let delta_b_mem = self.fiber_cache.b_mem.read_count - tmp_b_r;
+                let delta_c_mem = self.fiber_cache.psum_mem.read_count +
+                    self.fiber_cache.psum_mem.write_count - tmp_psum_mem_rw;
+                let delta_cache = self.fiber_cache.read_count +
+                    self.fiber_cache.write_count - tmp_cache_rw;
+
                 // Update exec_counter.
                 let tracker = self.exec_trackers
                     .get_mut(&self.pes[i].cur_block.get_idx())
                     .unwrap();
-                tracker.miss_size += self.fiber_cache.b_mem.read_count - tmp_b_r;
-                tracker.psum_rw_size[0] += self.fiber_cache.psum_mem.read_count +
-                    self.fiber_cache.psum_mem.write_count - tmp_psum_mem_rw;
-                tracker.psum_rw_size[1] += self.fiber_cache.read_count +
-                    self.fiber_cache.write_count - tmp_cache_rw;
+                tracker.miss_size += delta_b_mem;
+                tracker.psum_rw_size[0] += delta_c_mem;
+                tracker.psum_rw_size[1] += delta_cache;
+
             }
 
             trace_print!(
@@ -526,6 +614,26 @@ impl<'a> TrafficModel<'a> {
                 if !self.slide_window(pe_no) {
                     trace_print!("Failed to shift window.");
                     // Either empty or finished.
+                    // Add block exec log to group.
+                    if self.pes[pe_no].cur_block.height != 0 {
+                        let blk_idx = self.pes[pe_no].cur_block.get_idx();
+                        let grp_idx = self.a_group.rgmap[&self.pes[i].cur_block.row_s];
+                        let row_num = self.pes[i].cur_block.height;
+                        let cost = (self.exec_trackers[&blk_idx].miss_size +
+                            self.exec_trackers[&blk_idx].psum_rw_size[0]) * 100
+                            + self.exec_trackers[&blk_idx].psum_rw_size[1];
+                        let ele_size = (blk_idx[1]..blk_idx[1]+row_num)
+                            .fold(0, |ref s, ref x| {
+                            *s + self.a_mem.indptr[*x + 1] - self.a_mem.indptr[*x]
+                        });
+                        self.a_group.groups[grp_idx].cost_num
+                            .entry(row_num)
+                            .and_modify(|e| {
+                                e[0] += cost;
+                                e[1] += ele_size; })
+                            .or_insert([cost, ele_size]);
+                    }
+                    // Try to assign a new block.
                     match self.get_next_block() {
                         Some(block) => {
                             trace_print!("Assign block {:?} to {}", block.get_idx(), pe_no);
@@ -573,6 +681,7 @@ impl<'a> TrafficModel<'a> {
 
     fn get_next_block(&mut self) -> Option<Block> {
         loop {
+            // Return if finished.
             if self.row_s >= self.a_mem.get_row_len() {
                 return None;
             }
@@ -735,7 +844,7 @@ impl<'a> TrafficModel<'a> {
         match self.accelerator {
             Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {}
             Accelerator::NewOmega => {
-                let block_adjust_scheme = 4;
+                let block_adjust_scheme = 5;
                 match block_adjust_scheme {
                     0 => {
                         // Scheme 0: Based on the reuse of the previous exeuction.
@@ -910,6 +1019,171 @@ impl<'a> TrafficModel<'a> {
                             let merged_psum_row = (1.0 - self.b_sparsity.powi(row_num as i32)) * self.fiber_cache.b_mem.mat_shape[0] as f32;
                             exp_psum_size += merged_psum_row * 2.0;
                             if exp_psum_size > self.fiber_cache.capability as f32 {
+                                break;
+                            }
+                            max_cachable_row += 1;
+                            temp_idx += 1;
+                        }
+
+                        max_cachable_row = max(1, max_cachable_row);
+
+                        trace_print!(
+                            "n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}, exp_psum_size: {}, max_cachable_row: {}",
+                            n1_cost, n1_ele_size, n2_cost, n2_ele_size, exp_psum_size, max_cachable_row
+                        );
+
+                        if (n1_cost as f32 / n1_ele_size as f32)
+                            <= (n2_cost as f32 / n2_ele_size as f32)
+                        {
+                            if n1_row_num >= n2_row_num {
+                                self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                            } else {
+                                self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                            }
+                        } else {
+                            if n1_row_num >= n2_row_num {
+                                self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                            } else {
+                                self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                            }
+                        }
+
+                        while self.block_shape[1] > max_cachable_row {
+                            if self.block_shape[1] == 1 { break; }
+                            self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                        }
+                    }
+                    5 => {
+                        // Scheme 5: Based on the row group.
+                        // First check if the row group changed.
+                        if self.a_group.rgmap[&self.row_s] != self.row_group {
+                            // Start from row_num = 1.
+                            self.block_shape[1] = 1;
+                            self.row_group = self.a_group.rgmap[&self.row_s];
+                            return;
+                        }
+
+                        // Then adjust based on the cost of different row num.
+                        let mut min_row_num = 1;
+                        let mut min_cost = f32::MAX;
+                        let mut cur_row_num = 1;
+                        while cur_row_num <= self.lane_num {
+                            if let Some(cost_num) =
+                                self.a_group.groups[self.row_group].cost_num.get_mut(&cur_row_num) {
+                                let div_cost = cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
+                                if div_cost < min_cost {
+                                    min_cost = div_cost;
+                                    min_row_num = cur_row_num;
+                                }
+                            } else {
+                                self.a_group.groups[self.row_group].cost_num.insert(cur_row_num, [0, 0]);
+                                min_row_num = cur_row_num;
+                                break;
+                            }
+                            cur_row_num *= 2;
+                        }
+
+                        // Avoid unecessary psum writeback by estimate the max cachable row num. 
+                        let mut max_cachable_row = 0;
+                        let mut exp_psum_size = 0.0;
+                        let mut temp_idx = cur_idx[1];
+                        while max_cachable_row <= self.lane_num - 1 &&
+                            temp_idx < self.a_mem.get_row_len() {
+                            // trace_print!("rgmap: {:?}, indptr: {}", self.b_group.rgmap.keys(), self.a_mem.indptr[temp_idx+1]);
+                            let brow_s = self.a_mem.indices[self.a_mem.indptr[temp_idx]];
+                            let brow_t = self.a_mem.indices[self.a_mem.indptr[temp_idx+1]-1];
+                            let bg_s = self.b_group.rgmap[&brow_s];
+                            let bg_t = self.b_group.rgmap[&brow_t];
+                            let b_width = self.fiber_cache.b_mem.mat_shape[0];
+                            let product_sparsity = self.b_group.groups[bg_s..bg_t+1]
+                                .iter()
+                                .fold(1.0, |p, x|
+                                p * x.avg_row_len as f32 / b_width as f32);
+                            let merged_psum_row = (1.0 - product_sparsity) * b_width as f32;
+                            exp_psum_size += merged_psum_row * 2.0;
+                            if exp_psum_size * 2.0 > self.fiber_cache.capability as f32 {
+                                break;
+                            }
+                            max_cachable_row += 1;
+                            temp_idx += 1;
+                        }
+
+                        max_cachable_row = max(1, max_cachable_row);
+
+                        trace_print!(
+                            "cost num: {:?}, min_row_num: {}, exp_psum_size: {}, max_cachable_row: {}",
+                            self.a_group.groups[self.row_group].cost_num,
+                            min_row_num,
+                            exp_psum_size,
+                            max_cachable_row
+                        );
+
+                        while min_row_num > max_cachable_row {
+                            if  min_row_num == 1 { break; }
+                             min_row_num = max( min_row_num / 2, 1);
+                        }
+
+                        self.block_shape[1] = min_row_num;
+                    }
+                    6 => {
+                        // First check if the row group changed.
+                        if self.a_group.rgmap[&self.row_s] != self.row_group {
+                            // Start from row_num = 1.
+                            self.block_shape[1] = 1;
+                            self.row_group = self.a_group.rgmap[&self.row_s];
+                            return;
+                        }
+
+                        let n1_block = self.block_topo.find_above(&cur_idx);
+                        if n1_block.is_none() {
+                            return;
+                        }
+                        let n1_block = n1_block.unwrap();
+                        let n1_row_num = cur_idx[1] - n1_block[1];
+                        let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x| {
+                            s + self.a_mem.indptr[x + 1] - self.a_mem.indptr[x]
+                        });
+
+                        let n2_block = self.block_topo.find_above(&n1_block);
+                        if n2_block.is_none() {
+                            return;
+                        }
+                        let n2_block = n2_block.unwrap();
+                        let n2_row_num = n1_block[1] - n2_block[1];
+                        let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| {
+                            s + self.a_mem.indptr[x + 1] - self.a_mem.indptr[x]
+                        });
+
+                        let n1_cost = (self.exec_trackers[&n1_block].miss_size +
+                            self.exec_trackers[&n1_block].psum_rw_size[0]) * 100
+                            + self.exec_trackers[&n1_block].psum_rw_size[1];
+                        let n2_cost = (self.exec_trackers[&n2_block].miss_size +
+                            self.exec_trackers[&n2_block].psum_rw_size[0]) * 100
+                            + self.exec_trackers[&n2_block].psum_rw_size[1];
+
+                        // Avoid unecessary psum writeback by estimate the max cachable row num. 
+                        let mut max_cachable_row = 0;
+                        let mut exp_psum_size = 0.0;
+                        let mut temp_idx = cur_idx[1];
+                        while max_cachable_row <= self.lane_num - 1 &&
+                            temp_idx < self.a_mem.get_row_len() {
+                            // trace_print!("rgmap: {:?}, indptr: {}", self.b_group.rgmap.keys(), self.a_mem.indptr[temp_idx+1]);
+                            let brow_s = self.a_mem.indices[self.a_mem.indptr[temp_idx]];
+                            let brow_t = self.a_mem.indices[self.a_mem.indptr[temp_idx+1]-1];
+                            let bg_s = self.b_group.rgmap[&brow_s];
+                            let bg_t = self.b_group.rgmap[&brow_t];
+                            let b_width = self.fiber_cache.b_mem.mat_shape[0];
+                            let product_sparsity = self.b_group.groups[bg_s..bg_t+1]
+                                .iter()
+                                .fold(1.0, |p, x|
+                                p * x.avg_row_len as f32 / b_width as f32);
+                            let merged_psum_row = (1.0 - product_sparsity) * b_width as f32;
+                            // Include index & value.
+                            exp_psum_size += merged_psum_row * 2.0;
+                            // if exp_psum_size > self.fiber_cache.capability as f32 {
+                            
+                            // Consider two psum on chip may need to merge.
+                            if exp_psum_size * 2.0 > self.fiber_cache.capability as f32 {
                                 break;
                             }
                             max_cachable_row += 1;

@@ -62,6 +62,9 @@ pub struct Cli {
     /// The workload name.
     pub workload: String,
 
+    /// Configuration file path.
+    pub configuration: String,
+
     /// Preprocessing.
     #[structopt(short, long)]
     pub preprocess: bool,

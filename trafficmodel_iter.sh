@@ -15,32 +15,47 @@ improved_nn=('alexnetconv1' 'alexnetconv2' 'alexnetconv3' 'alexnetconv4'
 'alexnetfc1' 'alexnetfc2' 'resnet50fc' 'resnet50layer3_conv1' 'resnet50layer3_conv2'
 'resnet50layer3_conv3' 'resnet50layer4_conv1' 'resnet50layer4_conv2' 'resnet50layer4_conv3')
 
+reduce_overhead=('192bit' 'brainpc2' 'case9' 'mri2' 'net4-1' 'rajat17' 'shermanACb' 'south31'
+'TSOPF_FS_b9_c6' 'Maragal_8' 'TSOPF_FS_b162_c4')
+enlarge_advantage=('bas1lp' 'blockqp1' 'c-64' 'GaAsH6' 'gupta2' 'SiO' 'TSOPF_FS_b162_c1')
+
 cur_date=$(date +'%m_%d_%H')
 echo "----Execute use $1 on $2----"
-echo "Write output to $3/${cur_date}"
+echo "----Use config: $4----"
+echo "----Write output to $3/${cur_date}----"
 mkdir -p ${3}/${cur_date}/
 if [[ "$2" == "ss" ]]; then
     for i in "${ss[@]}"; do
         echo "* start $i"
-        nohup ./target/debug/omega-sim trafficmodel $1 $2 $i > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
+        nohup ./target/debug/omega-sim trafficmodel $1 $2 $i $4 > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
         sleep 2
     done
 elif [[ "$2" == "nn" ]]; then
     for i in "${nn[@]}"; do
         echo "* start $i"
-        nohup ./target/debug/omega-sim trafficmodel $1 $2 $i > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
+        nohup ./target/debug/omega-sim trafficmodel $1 $2 $i $4 > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
         sleep 2
     done
 elif [[ "$2" == "improve" ]]; then
     for i in "${improved_ss[@]}"; do
         echo "* start $i"
-        nohup ./target/debug/omega-sim trafficmodel $1 ss $i > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
+        nohup ./target/debug/omega-sim trafficmodel $1 ss $i $4 > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
         # sleep 2
     done
     for i in "${improved_nn[@]}"; do
         echo "* start $i"
-        nohup ./target/debug/omega-sim trafficmodel $1 nn $i > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
+        nohup ./target/debug/omega-sim trafficmodel $1 nn $i $4 > ${3}/${cur_date}/${1}_${i}_${cur_date}.log &
         # sleep 2
+    done
+elif [[ "$2" == "reduce_overhead" ]]; then
+    for i in "${reduce_overhead[@]}"; do
+        echo "* start $i"
+        nohup ./target/debug/omega-sim trafficmodel $1 ss $i $4 > ${3}/${cur_date}/${1}_${i}${cur_date}.log &
+    done
+elif [[ "$2" == "enlarge_advantage" ]]; then
+    for i in "${enlarge_advantage[@]}"; do
+        echo "* start $i"
+        nohup ./target/debug/omega-sim trafficmodel $1 ss $i $4 > ${3}/${cur_date}/${1}_${i}${cur_date}.log &
     done
 else
     echo "Invalid workload type $2."

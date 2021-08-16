@@ -41,8 +41,9 @@ use structopt::StructOpt;
 
 fn main() {
     // let omega_config = parse_config("omega_config_3mb.json").unwrap();
-    let omega_config = parse_config("omega_config_1mb.json").unwrap();
     let cli: Cli = Cli::from_args();
+    // let omega_config = parse_config("omega_config_1mb.json").unwrap();
+    let omega_config = parse_config(&cli.configuration).unwrap();
 
     let gemm: GEMM;
     match cli.category {
