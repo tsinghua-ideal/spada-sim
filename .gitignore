@@ -1,6 +1,7 @@
 /target
 *.out
 *.log
+*.csv
 perf.*
 *.svg
 *.gz

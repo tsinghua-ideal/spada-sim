@@ -14,6 +14,7 @@ use crate::{
     storage::{self, CsrMatStorage, CsrRow, StorageAPI},
 };
 use crate::trace_print;
+use crate::util::gen_rands_from_range;
 
 #[derive(Debug, Clone)]
 struct PE {
@@ -278,6 +279,10 @@ pub struct TrafficModel<'a> {
     a_group: GroupTracker,
     b_group: GroupTracker,
     row_group: usize,
+
+    /// sampling list. Used by wide groups.
+    sampling_bounds: Vec<usize>,
+    set_row_num: usize,
 }
 
 impl<'a> TrafficModel<'a> {
@@ -295,9 +300,16 @@ impl<'a> TrafficModel<'a> {
         accelerator: Accelerator,
     ) -> TrafficModel<'a> {
         // Preprocessing. Group each matrix's rows by their row lens.
-        let var_factor = 5;
+        let var_factor = 4;
         let a_group = parse_group(&a_mem, var_factor);
         let b_group = parse_group(&b_mem, var_factor);
+
+        trace_print!("-- a_group:");
+        let a_rg = a_group.groups.iter().map(|gi| gi.row_range).collect::<Vec<[usize; 2]>>();
+        trace_print!("{:?}", &a_rg);
+        trace_print!("-- b_group:");
+        let b_rg = b_group.groups.iter().map(|gi| gi.row_range).collect::<Vec<[usize; 2]>>();
+        trace_print!("{:?}", &b_rg);
 
         // Init from the inner-product dataflow.
         // Can be changed to be adaptive.
@@ -341,7 +353,9 @@ impl<'a> TrafficModel<'a> {
             merge_period: lane_num / default_block_shape[1],
             a_group,
             b_group,
-            row_group: 0,
+            row_group: usize::MAX,
+            sampling_bounds: vec![],
+            set_row_num: usize::MAX,
         }
     }
 
@@ -572,10 +586,13 @@ impl<'a> TrafficModel<'a> {
                 if self.merge_trackers[&rowid].finished
                     && self.merge_trackers[&rowid].blocks.len() == 0
                 {
-                    trace_print!(
-                        "Assign jobs: swapout addr {} of {}",
-                        psum_addrs[0], self.merge_queue[i]
-                    );
+                    if self.fiber_cache.rowmap.contains_key(&psum_addrs[0]) {
+                        trace_print!(
+                            "Assign jobs: swapout addr {} of {} with size {}",
+                            psum_addrs[0], self.merge_queue[i],
+                            self.fiber_cache.rowmap.get(&psum_addrs[0]).unwrap().size()
+                        );
+                    }
                     self.fiber_cache.swapout(psum_addrs[0]);
                 }
                 self.merge_queue.remove(i);
@@ -622,7 +639,7 @@ impl<'a> TrafficModel<'a> {
                         let cost = (self.exec_trackers[&blk_idx].miss_size +
                             self.exec_trackers[&blk_idx].psum_rw_size[0]) * 100
                             + self.exec_trackers[&blk_idx].psum_rw_size[1];
-                        let ele_size = (blk_idx[1]..blk_idx[1]+row_num)
+                        let ele_size = (blk_idx[1]..min(blk_idx[1]+row_num, self.a_mem.get_row_len()))
                             .fold(0, |ref s, ref x| {
                             *s + self.a_mem.indptr[*x + 1] - self.a_mem.indptr[*x]
                         });
@@ -685,8 +702,14 @@ impl<'a> TrafficModel<'a> {
             if self.row_s >= self.a_mem.get_row_len() {
                 return None;
             }
+
+            // Initial adjust of block.
+            if self.row_group == usize::MAX {
+                self.col_s = 0;
+                self.adjust_block([self.col_s, self.row_s]);
+            }
             // Try to allocate along K dim.
-            if self.is_block_valid(self.row_s, self.block_shape[1], self.col_s) {
+            else if self.is_block_valid(self.row_s, self.block_shape[1], self.col_s) {
                 let block = Block {
                     width: self.block_shape[0],
                     height: self.block_shape[1],
@@ -719,12 +742,12 @@ impl<'a> TrafficModel<'a> {
                         tracker.finished = row_finished;
                     }
                 }
-
                 // Adjust the merge period according to the block shape.
                 self.merge_counter = 0;
                 self.merge_period = self.lane_num / block.height;
                 return Some(block);
-            } else {
+            }
+            else {
                 // Block shape adaptation can be added here. For now we only support adjust block
                 // when finishing traverse over K dim.
                 self.row_s += self.block_shape[1];
@@ -842,9 +865,15 @@ impl<'a> TrafficModel<'a> {
     /// For now we only support adjust block when finishing traverse over K dim.
     fn adjust_block(&mut self, cur_idx: [usize; 2]) {
         match self.accelerator {
-            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {}
+            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
+                // First check if the row group changed.
+                if self.a_group.rgmap[&self.row_s] != self.row_group {
+                    self.row_group = self.a_group.rgmap[&self.row_s];
+                    return;
+                }
+            }
             Accelerator::NewOmega => {
-                let block_adjust_scheme = 5;
+                let block_adjust_scheme = 8;
                 match block_adjust_scheme {
                     0 => {
                         // Scheme 0: Based on the reuse of the previous exeuction.
@@ -1088,19 +1117,39 @@ impl<'a> TrafficModel<'a> {
                         let mut exp_psum_size = 0.0;
                         let mut temp_idx = cur_idx[1];
                         while max_cachable_row <= self.lane_num - 1 &&
-                            temp_idx < self.a_mem.get_row_len() {
+                            temp_idx < self.a_mem.get_row_len() &&
+                            self.a_mem.indptr[temp_idx] < self.a_mem.indices.len() {
                             // trace_print!("rgmap: {:?}, indptr: {}", self.b_group.rgmap.keys(), self.a_mem.indptr[temp_idx+1]);
-                            let brow_s = self.a_mem.indices[self.a_mem.indptr[temp_idx]];
-                            let brow_t = self.a_mem.indices[self.a_mem.indptr[temp_idx+1]-1];
+
+                            if self.a_mem.indptr[temp_idx] == self.a_mem.indptr[temp_idx+1] {
+                                max_cachable_row += 1;
+                                temp_idx += 1;
+                                continue;
+                            }
+                            let idx_s = self.a_mem.indptr[temp_idx];
+                            let idx_t = self.a_mem.indptr[temp_idx+1];
+                            let brow_s = self.a_mem.indices[idx_s];
+                            let brow_t = self.a_mem.indices[idx_t-1];
                             let bg_s = self.b_group.rgmap[&brow_s];
                             let bg_t = self.b_group.rgmap[&brow_t];
                             let b_width = self.fiber_cache.b_mem.mat_shape[0];
+                            let idx_per_g = (idx_t - idx_s) / (bg_t - bg_s + 1);
+                            let rm_idxs_num = idx_t - idx_s - (idx_per_g * (bg_t - bg_s + 1));
+                            let mut group_row_num: Vec<usize> = vec![idx_per_g; bg_t - bg_s + 1];
+                            for idx in gen_rands_from_range(0, bg_t - bg_s + 1, rm_idxs_num) {
+                                group_row_num[idx] += 1;
+                            }
+
                             let product_sparsity = self.b_group.groups[bg_s..bg_t+1]
                                 .iter()
-                                .fold(1.0, |p, x|
-                                p * x.avg_row_len as f32 / b_width as f32);
+                                .zip(group_row_num.iter())
+                                .fold(1.0, |p, x| {
+                                    p * ((b_width - x.0.avg_row_len) as f32 / b_width as f32).powi(*x.1 as i32)
+                                }
+                            );
                             let merged_psum_row = (1.0 - product_sparsity) * b_width as f32;
                             exp_psum_size += merged_psum_row * 2.0;
+                            trace_print!("brow_s {} brow_t {} merged_psum_row {}", brow_s, brow_t, merged_psum_row);
                             if exp_psum_size * 2.0 > self.fiber_cache.capability as f32 {
                                 break;
                             }
@@ -1181,7 +1230,7 @@ impl<'a> TrafficModel<'a> {
                             // Include index & value.
                             exp_psum_size += merged_psum_row * 2.0;
                             // if exp_psum_size > self.fiber_cache.capability as f32 {
-                            
+
                             // Consider two psum on chip may need to merge.
                             if exp_psum_size * 2.0 > self.fiber_cache.capability as f32 {
                                 break;
@@ -1217,6 +1266,176 @@ impl<'a> TrafficModel<'a> {
                             if self.block_shape[1] == 1 { break; }
                             self.block_shape[1] = max(self.block_shape[1] / 2, 1);
                         }
+                    }
+                    7 => {
+                        // First check if the row group changed.
+                        if self.a_group.rgmap[&self.row_s] != self.row_group {
+                            // Start from row_num = 1 to touch the distribution.
+                            self.block_shape[1] = 1;
+                            self.row_group = self.a_group.rgmap[&self.row_s];
+                            return;
+                        }
+
+                        // After touching the distribution, clear the exec log to get rid of the
+                        // initial thrashing.
+                        if self.row_s == self.a_group.groups[self.row_group].row_range[0] + 1 {
+                            self.a_group.groups[self.row_group].cost_num.remove(&1);
+                        }
+
+                        // Then adjust based on the cost of different row num.
+                        let mut min_row_num = 1;
+                        let mut min_cost = f32::MAX;
+                        let mut cur_row_num = 1;
+
+                        trace_print!("cost num: {:?}", self.a_group.groups[self.row_group].cost_num);
+
+                        while cur_row_num <= self.lane_num {
+                            if let Some(cost_num) =
+                                self.a_group.groups[self.row_group].cost_num.get_mut(&cur_row_num) {
+                                let div_cost = cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
+                                if div_cost < min_cost {
+                                    min_cost = div_cost;
+                                    min_row_num = cur_row_num;
+                                }
+                            } else {
+                                self.a_group.groups[self.row_group].cost_num.insert(cur_row_num, [0, 0]);
+                                min_row_num = cur_row_num;
+                                break;
+                            }
+                            cur_row_num *= 2;
+                        }
+
+                        while cur_row_num > 1 && (self.row_s + cur_row_num >= self.a_group.groups[self.row_group].row_range[1]) {
+                            cur_row_num /= 2;
+                        }
+
+                        self.block_shape[1] = min_row_num;
+                    }
+                    8 => {
+                        trace_print!("-Adjust block");
+                        // Separately treat wide groups and narrow groups.
+                        let group_diviser = 128;
+                        let sample_num = 4;
+                        let mut min_row_num = 1;
+
+                        // First check if the row group changed and prepare for sampling.
+                        if self.a_group.rgmap[&self.row_s] != self.row_group {
+                            // Start from row_num = 1 to touch the distribution.
+                            self.block_shape[1] = 1;
+                            self.row_group = self.a_group.rgmap[&self.row_s];
+                            let cur_gi = &self.a_group.groups[self.row_group];
+                            if cur_gi.row_range[1] - cur_gi.row_range[0] > group_diviser {
+                                let mut cur_row = self.row_s+1;
+                                let mut i = 1;
+                                self.sampling_bounds.clear();
+                                while i <= self.lane_num {
+                                    cur_row += sample_num * i;
+                                    self.sampling_bounds.push(cur_row);
+                                    i *= 2;
+                                }
+                            }
+                            self.set_row_num = usize::MAX;
+                            return;
+                        }
+
+                        let cur_gi = &self.a_group.groups[self.row_group];
+                        if cur_gi.row_range[1] - cur_gi.row_range[0] > group_diviser {
+                            // Treat the wide groups.
+                            if self.row_s >= *self.sampling_bounds.last().unwrap() {
+                                if self.set_row_num == usize::MAX {
+                                    // Sampling finished.
+                                    // Then adjust based on the cost of different row num.
+                                    let mut min_cost = f32::MAX;
+                                    let mut cur_row_num = 1;
+                                    while cur_row_num <= self.lane_num {
+                                        if let Some(cost_num) =
+                                            self.a_group.groups[self.row_group].cost_num.get_mut(&cur_row_num) {
+                                                let div_cost = cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
+                                            if div_cost < min_cost {
+                                                min_cost = div_cost;
+                                                self.set_row_num = cur_row_num;
+                                            }
+                                        } else {
+                                            self.a_group.groups[self.row_group].cost_num.insert(cur_row_num, [0, 0]);
+                                            self.set_row_num = cur_row_num;
+                                            break;
+                                        }
+                                        cur_row_num *= 2;
+                                    }
+                                    while cur_row_num > 1 && (self.row_s + cur_row_num >= self.a_group.groups[self.row_group].row_range[1]) {
+                                        cur_row_num /= 2;
+                                    }
+                                }
+                                min_row_num = self.set_row_num;
+
+                            } else {
+                                // Sampling.
+                                trace_print!("---Sampling");
+                                min_row_num = match self.sampling_bounds.binary_search(&(self.row_s)) {
+                                    Ok(idx) => 2usize.pow(idx as u32+1),
+                                    Err(idx) => 2usize.pow(idx as u32),
+                                };
+                            }
+                            while min_row_num > 1 && (self.row_s + min_row_num >= self.a_group.groups[self.row_group].row_range[1]) {
+                                min_row_num /= 2;
+                            }
+                            trace_print!("group_range {:?} cost num: {:?}", &self.a_group.groups[self.row_group].row_range, self.a_group.groups[self.row_group].cost_num);
+                            self.block_shape[1] = min_row_num;
+                        } else {
+                            // Treat the narrow groups.
+                            let n1_block = self.block_topo.find_above(&cur_idx);
+                            if n1_block.is_none() {
+                                return;
+                            }
+                            let n1_block = n1_block.unwrap();
+                            let n1_row_num = cur_idx[1] - n1_block[1];
+                            let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x| {
+                                s + self.a_mem.indptr[x + 1] - self.a_mem.indptr[x]
+                            });
+    
+                            let n2_block = self.block_topo.find_above(&n1_block);
+                            if n2_block.is_none() {
+                                return;
+                            }
+                            let n2_block = n2_block.unwrap();
+                            let n2_row_num = n1_block[1] - n2_block[1];
+                            let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| {
+                                s + self.a_mem.indptr[x + 1] - self.a_mem.indptr[x]
+                            });
+    
+                            let n1_cost = (self.exec_trackers[&n1_block].miss_size +
+                                self.exec_trackers[&n1_block].psum_rw_size[0]) * 100
+                                + self.exec_trackers[&n1_block].psum_rw_size[1];
+                            let n2_cost = (self.exec_trackers[&n2_block].miss_size +
+                                self.exec_trackers[&n2_block].psum_rw_size[0]) * 100
+                                + self.exec_trackers[&n2_block].psum_rw_size[1];
+
+                            trace_print!(
+                                "group_range {:?} n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
+                                &self.a_group.groups[self.row_group].row_range, n1_cost, n1_ele_size, n2_cost, n2_ele_size
+                            );
+
+                            if (n1_cost as f32 / n1_ele_size as f32)
+                                <= (n2_cost as f32 / n2_ele_size as f32)
+                            {
+                                if n1_row_num >= n2_row_num {
+                                    self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                                } else {
+                                    self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                                }
+                            } else {
+                                if n1_row_num >= n2_row_num {
+                                    self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                                } else {
+                                    self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                                }
+                            }
+
+                            while self.block_shape[1] > 1 && (self.row_s + self.block_shape[1] >= self.a_group.groups[self.row_group].row_range[1]) {
+                                self.block_shape[1] /= 2;
+                            }
+                        }
+
                     }
                     _ => panic!("Invalid merge scheme:{}", block_adjust_scheme),
                 }
