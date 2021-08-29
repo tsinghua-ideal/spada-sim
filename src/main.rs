@@ -20,7 +20,7 @@ use storage_traffic_model::TrafficModel;
 use crate::components::StreamBuffer;
 use crate::frontend::{parse_config, Accelerator, Cli, Simulator, WorkloadCate};
 use crate::pipeline_simu::PipelineSimulator;
-use crate::preprocessing::affinity_based_row_reordering;
+use crate::preprocessing::{affinity_based_row_reordering, sort_by_length};
 use crate::py2rust::{load_pickled_gemms, load_mm_mat};
 use crate::storage::CsrMatStorage;
 use b_reuse_counter::BReuseCounter;
@@ -77,14 +77,16 @@ fn main() {
 
             // Preprocessing.
             if cli.preprocess {
-                if let Some(rowmap) = affinity_based_row_reordering(
-                    &mut dram_a,
-                    omega_config.cache_size,
-                    a_avg_row_len,
-                    b_avg_row_len,
-                ) {
-                    dram_a.reorder_row(rowmap);
-                }
+                // if let Some(rowmap) = affinity_based_row_reordering(
+                //     &mut dram_a,
+                //     omega_config.cache_size,
+                //     a_avg_row_len,
+                //     b_avg_row_len,
+                // ) {
+                //     dram_a.reorder_row(rowmap);
+                // }
+                let rowmap = sort_by_length(&mut dram_a);
+                dram_a.reorder_row(rowmap);
             }
 
             let output_base_addr = dram_b.indptr.len();

@@ -295,7 +295,7 @@ impl CsrMatStorage {
         self.row_remap = rowmap;
     }
 
-    pub fn get_rowptr(&self, rowid: usize) -> usize {
+    pub fn rowptr(&self, rowid: usize) -> usize {
         if self.remapped {
             return self.indptr[self.row_remap[&rowid]];
         } else {
@@ -303,12 +303,30 @@ impl CsrMatStorage {
         }
     }
 
-    pub fn get_row_len(&self) -> usize {
+    pub fn colidx(&self, colid: usize) -> usize {
+        return self.indices[colid];
+    }
+
+    pub fn row_num(&self) -> usize {
         self.indptr.len() - 1
     }
 
     pub fn get_nonzero(&self) -> usize {
         self.indices.len()
+    }
+
+    pub fn get_ele_num(&self, row_s: usize, row_t: usize) -> usize {
+        let mut ele_num = 0;
+        for i in row_s..row_t {
+            let rawidx = if self.remapped {
+                self.row_remap[&i]
+            } else {
+                i
+            };
+            ele_num += self.indptr[rawidx+1] - self.indptr[rawidx];
+        }
+
+        return ele_num;
     }
 }
 

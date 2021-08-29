@@ -222,7 +222,7 @@ impl<'a> TrafficModel<'a> {
                 cache_size,
                 word_byte,
                 output_base_addr,
-                lane_num * a_mem.get_nonzero() / a_mem.get_row_len(),
+                lane_num * a_mem.get_nonzero() / a_mem.row_num(),
                 b_mem,
                 psum_mem,
             ),
@@ -518,7 +518,7 @@ impl<'a> TrafficModel<'a> {
 
     fn get_next_block(&mut self) -> Option<Block> {
         loop {
-            if self.row_s >= self.a_mem.get_row_len() {
+            if self.row_s >= self.a_mem.row_num() {
                 return None;
             }
             // Try to allocate along K dim.
@@ -601,8 +601,8 @@ impl<'a> TrafficModel<'a> {
     }
 
     fn is_col_s_valid(&self, rowid: usize, col_s: usize) -> bool {
-        if (rowid >= self.a_mem.get_row_len())
-            || (self.a_mem.get_rowptr(rowid + 1) - self.a_mem.get_rowptr(rowid) <= col_s)
+        if (rowid >= self.a_mem.row_num())
+            || (self.a_mem.rowptr(rowid + 1) - self.a_mem.rowptr(rowid) <= col_s)
         {
             return false;
         } else {
@@ -791,19 +791,19 @@ impl<'a> TrafficModel<'a> {
                 unused_lane_num -= used_num;
             }
         } else {
-            rowidxs = (pe.row_s..min(pe.row_s + pe.reduction_window[1], self.a_mem.get_row_len()))
+            rowidxs = (pe.row_s..min(pe.row_s + pe.reduction_window[1], self.a_mem.row_num()))
                 .filter(|x| {
-                    self.a_mem.get_rowptr(*x + 1) as i32 - self.a_mem.get_rowptr(*x) as i32 >= 0
+                    self.a_mem.rowptr(*x + 1) as i32 - self.a_mem.rowptr(*x) as i32 >= 0
                 })
                 .collect();
             let mut broadcast_cache: HashMap<usize, CsrRow> = HashMap::new();
             for rowidx in rowidxs.iter() {
                 let mut r_sfs = CsrRow::new(*rowidx);
-                if self.a_mem.get_rowptr(*rowidx + 1) > self.a_mem.get_rowptr(*rowidx) + pe.col_s {
+                if self.a_mem.rowptr(*rowidx + 1) > self.a_mem.rowptr(*rowidx) + pe.col_s {
                     let ele_num = min(
                         pe.reduction_window[0],
-                        self.a_mem.get_rowptr(*rowidx + 1)
-                            - self.a_mem.get_rowptr(*rowidx)
+                        self.a_mem.rowptr(*rowidx + 1)
+                            - self.a_mem.rowptr(*rowidx)
                             - pe.col_s,
                     );
                     r_sfs = self.a_mem.read(*rowidx, pe.col_s, ele_num).unwrap();
@@ -901,10 +901,10 @@ impl<'a> TrafficModel<'a> {
 
     pub fn get_exec_result(&mut self) -> Vec<CsrRow> {
         let mut c = vec![];
-        for rowid in 0..self.a_mem.get_row_len() {
+        for rowid in 0..self.a_mem.row_num() {
             let mut csrrow = CsrRow::new(rowid);
             // if self.a_mem.indptr[rowid+1] - self.a_mem.indptr[rowid] > 0 {
-            if self.a_mem.get_rowptr(rowid + 1) - self.a_mem.get_rowptr(rowid) > 0 {
+            if self.a_mem.rowptr(rowid + 1) - self.a_mem.rowptr(rowid) > 0 {
                 let raw_rowid = if self.a_mem.remapped {
                     self.a_mem.row_remap[&rowid]
                 } else {

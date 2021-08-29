@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
 use priority_queue::PriorityQueue;
+use sprs::vec;
 
 use crate::storage::CsrMatStorage;
+use crate::trace_print;
 
 pub type RowMap = HashMap<usize, usize>;
 
@@ -69,4 +71,17 @@ fn find_contain_rows(amat: &CsrMatStorage, colid: usize) -> Vec<usize> {
     }
 
     result
+}
+
+pub fn sort_by_length(
+    amat: &mut CsrMatStorage,
+) -> HashMap<usize, usize> {
+    trace_print!("---Sort A rows by length---");
+    let mut id_len_vector = vec![];
+    for idx in 0..amat.row_num() {
+        id_len_vector.push([idx, amat.rowptr(idx+1) - amat.rowptr(idx)]);
+    }
+    id_len_vector.sort_by(|a, b| a[1].cmp(&b[1]));
+    let remap: HashMap<usize, usize> = id_len_vector.iter().enumerate().map(|x| (x.0, x.1[0])).collect();
+    return remap;
 }

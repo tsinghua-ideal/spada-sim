@@ -309,7 +309,7 @@ impl<'a> BReuseCounter<'a> {
         // Assume an unlimited cache so that every unique fiber requires only one access.
         println!("--oracle_fetch");
         let mut collect = HashMap::new();
-        for i in 0..self.a_mem.get_row_len() {
+        for i in 0..self.a_mem.row_num() {
             let s = self.a_mem.indptr[i];
             let t = self.a_mem.indptr[i + 1];
             for colptr in self.a_mem.indices[s..t].iter() {
@@ -326,7 +326,7 @@ impl<'a> BReuseCounter<'a> {
         println!("--cached_fetch");
         let mut collect = HashMap::new();
         let mut cache = PriorityCacheSimu::new(self.cache_size, 8);
-        for i in 0..self.a_mem.get_row_len() {
+        for i in 0..self.a_mem.row_num() {
             print!("{} ", i);
             let s = self.a_mem.indptr[i];
             let t = self.a_mem.indptr[i + 1];
@@ -358,17 +358,17 @@ impl<'a> BReuseCounter<'a> {
         println!("--blocked_fetch");
         let mut collect = HashMap::new();
         let mut cache = PriorityCacheSimu::new(self.cache_size, 8);
-        for i in (0..self.a_mem.get_row_len()).step_by(row_num) {
+        for i in (0..self.a_mem.row_num()).step_by(row_num) {
             let mut ss = vec![];
             let mut st = vec![];
-            for rowidx in i..min(i + row_num, self.a_mem.get_row_len()) {
+            for rowidx in i..min(i + row_num, self.a_mem.row_num()) {
                 ss.push(self.a_mem.indptr[rowidx]);
                 st.push(self.a_mem.indptr[rowidx + 1]);
             }
             let mut coloffset = 0;
             loop {
                 let mut finished = true;
-                for rowidx in i..min(i + row_num, self.a_mem.get_row_len()) {
+                for rowidx in i..min(i + row_num, self.a_mem.row_num()) {
                     // print!("{} ", rowidx);
                     let colidx = ss[rowidx - i] + coloffset;
                     if colidx >= st[rowidx - i] {
@@ -399,7 +399,7 @@ impl<'a> BReuseCounter<'a> {
             }
             println!(
                 "last row: {} b fetch: {}",
-                min(i + row_num - 1, self.a_mem.get_row_len()),
+                min(i + row_num - 1, self.a_mem.row_num()),
                 collect.values().sum::<usize>()
             );
         }
@@ -412,7 +412,7 @@ impl<'a> BReuseCounter<'a> {
         let mut prev_pos: HashMap<usize, [usize; 2]> = HashMap::new();
         let mut occr_counter = HashMap::new();
         let mut ele_counter: usize = 0;
-        for i in 0..self.a_mem.get_row_len() {
+        for i in 0..self.a_mem.row_num() {
             let s = self.a_mem.indptr[i];
             let t = self.a_mem.indptr[i + 1];
             for colptr in self.a_mem.indices[s..t].iter() {
@@ -444,7 +444,7 @@ impl<'a> BReuseCounter<'a> {
         let mut collect: HashMap<usize, Vec<usize>> = HashMap::new();
         let mut prev_pos: HashMap<usize, usize> = HashMap::new();
         let mut ele_counter: usize = 0;
-        for i in 0..self.a_mem.get_row_len() {
+        for i in 0..self.a_mem.row_num() {
             let s = self.a_mem.indptr[i];
             let t = self.a_mem.indptr[i + 1];
             for colptr in self.a_mem.indices[s..t].iter() {
@@ -467,17 +467,17 @@ impl<'a> BReuseCounter<'a> {
         let mut collect: HashMap<usize, Vec<usize>> = HashMap::new();
         let mut prev_pos: HashMap<usize, usize> = HashMap::new();
         let mut ele_counter: usize = 0;
-        for i in (0..self.a_mem.get_row_len()).step_by(row_num) {
+        for i in (0..self.a_mem.row_num()).step_by(row_num) {
             let mut ss = vec![];
             let mut st = vec![];
-            for rowidx in i..min(i + row_num, self.a_mem.get_row_len()) {
+            for rowidx in i..min(i + row_num, self.a_mem.row_num()) {
                 ss.push(self.a_mem.indptr[rowidx]);
                 st.push(self.a_mem.indptr[rowidx + 1]);
             }
             let mut coloffset = 0;
             loop {
                 let mut finished = true;
-                for rowidx in i..min(i + row_num, self.a_mem.get_row_len()) {
+                for rowidx in i..min(i + row_num, self.a_mem.row_num()) {
                     let colidx = ss[rowidx - i] + coloffset;
                     if colidx >= st[rowidx - i] {
                         continue;
@@ -507,7 +507,7 @@ impl<'a> BReuseCounter<'a> {
 
     pub fn collect_row_length(&mut self) -> HashMap<usize, usize> {
         let mut collect: HashMap<usize, usize> = HashMap::new();
-        for i in 0..self.b_mem.get_row_len() {
+        for i in 0..self.b_mem.row_num() {
             collect.insert(i, self.b_mem.indptr[i + 1] - self.b_mem.indptr[i]);
         }
 
@@ -517,9 +517,9 @@ impl<'a> BReuseCounter<'a> {
     pub fn neighbor_row_affinity(&mut self) -> HashMap<usize, usize> {
         println!("neighbor_row_affinity");
         let neighbor_num = self.cache_size / self.word_byte / 2;
-        let neighbor_row = neighbor_num / (self.a_mem.get_nonzero() / self.a_mem.get_row_len());
+        let neighbor_row = neighbor_num / (self.a_mem.get_nonzero() / self.a_mem.row_num());
         let mut collect: HashMap<usize, usize> = HashMap::new();
-        for i in 0..self.a_mem.get_row_len() {
+        for i in 0..self.a_mem.row_num() {
             let s = self.a_mem.indptr[i];
             let t = self.a_mem.indptr[i + 1];
             for col in self.a_mem.indices[s..t].iter() {
@@ -583,7 +583,7 @@ impl<'a> BReuseCounter<'a> {
         cache.take_snapshot();
         result_track.insert(-1, (collect, cache));
 
-        for row_end in 0..self.a_mem.get_row_len() {
+        for row_end in 0..self.a_mem.row_num() {
             let mut min_b_fetch = usize::MAX;
             let mut min_collect = None;
             let mut min_cache = None;
@@ -647,7 +647,7 @@ impl<'a> BReuseCounter<'a> {
         }
 
         return result_track
-            .get(&(self.a_mem.get_row_len() as i32 - 1))
+            .get(&(self.a_mem.row_num() as i32 - 1))
             .unwrap()
             .0
             .clone();
@@ -719,14 +719,14 @@ impl<'a> BReuseCounter<'a> {
 
         let mut row_s = 0;
         let mut row_num = 1;
-        while row_s < self.a_mem.get_row_len() {
+        while row_s < self.a_mem.row_num() {
             // Track the reuse distance.
             let prfl_window = if row_num < lane_num {
                 row_num * 2
             } else {
                 row_num
             };
-            let prfl_end = min(row_s + prfl_window, self.a_mem.get_row_len());
+            let prfl_end = min(row_s + prfl_window, self.a_mem.row_num());
             println!("Row: {} row_num: {} prfl_end: {}", row_s, row_num, prfl_end);
 
             let prev_occr = dist_tracker.prev_impr_occr.iter().sum::<usize>();
@@ -821,7 +821,7 @@ impl<'a> BReuseCounter<'a> {
                 row_num /= 2;
             }
 
-            row_num = min(row_num, self.a_mem.get_row_len() - row_s);
+            row_num = min(row_num, self.a_mem.row_num() - row_s);
         }
 
         collect
