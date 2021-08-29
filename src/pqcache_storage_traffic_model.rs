@@ -208,7 +208,7 @@ impl GroupTracker {
     }
 }
 
-pub fn parse_group(matrix: &CsrMatStorage, var_factor: usize) -> GroupTracker {
+pub fn parse_group(matrix: &CsrMatStorage, var_factor: f32) -> GroupTracker {
     let mut gt = GroupTracker::new();
     let mut prev_row_len = usize::MAX;
     let mut row_s = 0;
@@ -230,7 +230,7 @@ pub fn parse_group(matrix: &CsrMatStorage, var_factor: usize) -> GroupTracker {
             } else if prev_row_len == usize::MAX {
                 // Init the first group.
                 prev_row_len = row_len;
-            } else if prev_row_len * var_factor < row_len || prev_row_len > var_factor * row_len {
+            } else if prev_row_len as f32 * var_factor < row_len as f32 || prev_row_len as f32 > var_factor * row_len as f32 {
                 // Encounter a new group. Save the current one.
                 let gi = GroupInfo {
                     row_range: [row_s, idx],
@@ -300,7 +300,7 @@ impl<'a> TrafficModel<'a> {
         accelerator: Accelerator,
     ) -> TrafficModel<'a> {
         // Preprocessing. Group each matrix's rows by their row lens.
-        let var_factor = 4;
+        let var_factor = 1.5;
         let a_group = parse_group(&a_mem, var_factor);
         let b_group = parse_group(&b_mem, var_factor);
 
@@ -1395,7 +1395,7 @@ impl<'a> TrafficModel<'a> {
                             let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x| {
                                 s + self.a_mem.get_ele_num(x, x+1)
                             });
-    
+
                             let n2_block = self.block_topo.find_above(&n1_block);
                             if n2_block.is_none() {
                                 return;
