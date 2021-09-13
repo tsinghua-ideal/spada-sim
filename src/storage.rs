@@ -28,10 +28,19 @@ impl fmt::Display for StorageError {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Element {
-    pub row_idx: usize,
+    pub idx: [usize; 2],
     pub value: f64,
-    pub col_idx: usize,
+}
+
+impl Element {
+    pub fn new(idx: [usize; 2], value: f64) -> Element {
+        Element {
+            idx,
+            value,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -54,9 +63,8 @@ impl CsrRow {
         let mut result = vec![];
         for (d, col_idx) in izip!(self.data, self.indptr) {
             result.push(Element {
-                row_idx: self.rowptr,
+                idx: [col_idx, self.rowptr],
                 value: d,
-                col_idx: col_idx,
             });
         }
 
@@ -129,11 +137,11 @@ struct PriorityCacheSnapshot {
 }
 
 pub fn sorted_element_vec_to_csr_row(srt_ele_vec: Vec<Element>) -> CsrRow {
-    let rowptr = srt_ele_vec[0].row_idx;
+    let rowptr = srt_ele_vec[0].idx[1];
     let data = srt_ele_vec.iter().map(|e| e.value).collect::<Vec<f64>>();
     let indptr = srt_ele_vec
         .iter()
-        .map(|e| e.col_idx)
+        .map(|e| e.idx[0])
         .collect::<Vec<usize>>();
     return CsrRow {
         rowptr,
@@ -327,6 +335,32 @@ impl CsrMatStorage {
         }
 
         return ele_num;
+    }
+
+    pub fn read_a_scalar(&self, row_idx: usize, col_idx: usize) -> Result<Element, StorageError> {
+        if row_idx >= self.indptr.len() {
+            return Err(StorageError::ReadOverBoundError(format!(
+                "Invalid row_ptr: {}",
+                row_idx
+            )));
+        }
+
+        let row_idx = if self.remapped {
+            self.row_remap[&row_idx]
+        } else {
+            row_idx
+        };
+
+        let cur_row_pos = self.indptr[row_idx];
+        let end_row_pos = self.indptr[row_idx + 1];
+        let s = cur_row_pos + col_idx;
+        if s < end_row_pos {
+            return Ok(Element::new([self.indices[s], row_idx], self.data[s]));
+        } else {
+            return Err(StorageError::ReadEmptyRowError(format!(
+                "Invalid col_pos: {}", s
+            )));
+        }
     }
 }
 
@@ -1675,5 +1709,43 @@ impl<'a> PriorityCache<'a> {
 
     pub fn is_psum_row(&self, rowid: usize) -> bool {
         return rowid >= self.output_base_addr;
+    }
+
+    pub fn read_scalars(&mut self, a_loc: [usize; 2], col_s: usize, num: usize) -> Option<Vec<Element>> {
+        match self.read_cache(a_loc.clone()) {
+            Some(csrrow) => {
+                let elements = csrrow.as_element_vec();
+                Some(elements[col_s..min(col_s+num, elements.len())].to_vec())
+            }
+            None => {
+                if self.is_psum_row(a_loc[1]) {
+                    match self.psum_mem.read_row(a_loc[1]) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            self.write(csrrow.clone(), a_loc);
+                            let elements = csrrow.as_element_vec();
+                            Some(elements[col_s..min(col_s+num, elements.len())].to_vec())
+                        }
+                        Err(_) => None,
+                    }
+                } else {
+                    match self.b_mem.read_row(a_loc[1]) {
+                        Ok(csrrow) => {
+                            if self.track_count {
+                                self.read_count += csrrow.size();
+                                self.miss_count += csrrow.size();
+                            }
+                            self.write(csrrow.clone(), a_loc);
+                            let elements = csrrow.as_element_vec();
+                            Some(elements[col_s..min(col_s+num, elements.len())].to_vec())
+                        }
+                        Err(_) => None,
+                    }
+                }
+            }
+        }
     }
 }

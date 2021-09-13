@@ -1,5 +1,6 @@
+#![feature(drain_filter)]
+
 mod b_reuse_counter;
-mod components;
 mod frontend;
 mod gemm;
 mod oracle_storage_traffic_model;
@@ -10,6 +11,8 @@ mod py2rust;
 mod storage;
 mod storage_traffic_model;
 mod util;
+mod pqcache_omega_simulator;
+mod scheduler;
 
 use std::cmp::min;
 
@@ -17,7 +20,6 @@ use gemm::GEMM;
 use storage::VectorStorage;
 use storage_traffic_model::TrafficModel;
 
-use crate::components::StreamBuffer;
 use crate::frontend::{parse_config, Accelerator, Cli, Simulator, WorkloadCate};
 use crate::pipeline_simu::PipelineSimulator;
 use crate::preprocessing::{affinity_based_row_reordering, sort_by_length};
@@ -25,6 +27,7 @@ use crate::py2rust::{load_pickled_gemms, load_mm_mat};
 use crate::storage::CsrMatStorage;
 use b_reuse_counter::BReuseCounter;
 use structopt::StructOpt;
+use crate::pqcache_omega_simulator::CycleAccurateSimulator;
 
 // Workload included:
 // ss: ['2cubes_sphere', 'amazon0312', 'ca-CondMat', 'cage12', 'cit-Patents',
@@ -298,6 +301,47 @@ fn main() {
             // TODO: Initialize the StreamBuffer component.
             // let mut omega = PipelineSimulator::new();
             // TODO: Add StreamBuffer to omega.
+            let (mut dram_a, mut dram_b) = CsrMatStorage::init_with_gemm(gemm);
+            let mut dram_psum = VectorStorage::new();
+
+            // Preprocessing.
+            if cli.preprocess {
+                let rowmap = sort_by_length(&mut dram_a);
+                dram_a.reorder_row(rowmap);
+            }
+
+            let output_base_addr = dram_b.indptr.len();
+            // Determine the default window & block shape.
+            let default_block_shape = match cli.accelerator {
+                Accelerator::Ip => [omega_config.lane_num, 1],
+                Accelerator::Omega => [omega_config.block_shape[0], omega_config.block_shape[1]],
+                Accelerator::Op => [1, usize::MAX],
+                Accelerator::NewOmega => [omega_config.block_shape[0], omega_config.block_shape[1]],
+            };
+
+            let default_reduction_window = match cli.accelerator {
+                Accelerator::Ip | Accelerator::Omega | Accelerator::NewOmega => [
+                    omega_config.lane_num / omega_config.block_shape[1],
+                    omega_config.block_shape[1],
+                ],
+                Accelerator::Op => [1, omega_config.lane_num],
+            };
+
+            let mut cycle_simu = CycleAccurateSimulator::new(
+                omega_config.pe_num,
+                omega_config.lane_num,
+                omega_config.cache_size,
+                omega_config.word_byte,
+                output_base_addr,
+                default_reduction_window,
+                default_block_shape,
+                &mut dram_a,
+                &mut dram_b,
+                &mut dram_psum,
+                cli.accelerator.clone(),
+            );
+
+            cycle_simu.execute();
         }
     }
 }
