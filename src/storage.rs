@@ -1,4 +1,5 @@
 use crate::gemm::GEMM;
+use crate::trace_print;
 use fmt::write;
 use itertools::{izip, Itertools};
 use priority_queue::PriorityQueue;
@@ -13,7 +14,6 @@ use std::{
     ops::Index,
     usize,
 };
-use crate::trace_print;
 
 #[derive(Debug, Clone)]
 pub enum StorageError {
@@ -36,10 +36,7 @@ pub struct Element {
 
 impl Element {
     pub fn new(idx: [usize; 2], value: f64) -> Element {
-        Element {
-            idx,
-            value,
-        }
+        Element { idx, value }
     }
 }
 
@@ -139,10 +136,7 @@ struct PriorityCacheSnapshot {
 pub fn sorted_element_vec_to_csr_row(srt_ele_vec: Vec<Element>) -> CsrRow {
     let rowptr = srt_ele_vec[0].idx[1];
     let data = srt_ele_vec.iter().map(|e| e.value).collect::<Vec<f64>>();
-    let indptr = srt_ele_vec
-        .iter()
-        .map(|e| e.idx[0])
-        .collect::<Vec<usize>>();
+    let indptr = srt_ele_vec.iter().map(|e| e.idx[0]).collect::<Vec<usize>>();
     return CsrRow {
         rowptr,
         data,
@@ -326,12 +320,8 @@ impl CsrMatStorage {
     pub fn get_ele_num(&self, row_s: usize, row_t: usize) -> usize {
         let mut ele_num = 0;
         for i in row_s..row_t {
-            let rawidx = if self.remapped {
-                self.row_remap[&i]
-            } else {
-                i
-            };
-            ele_num += self.indptr[rawidx+1] - self.indptr[rawidx];
+            let rawidx = if self.remapped { self.row_remap[&i] } else { i };
+            ele_num += self.indptr[rawidx + 1] - self.indptr[rawidx];
         }
 
         return ele_num;
@@ -358,7 +348,8 @@ impl CsrMatStorage {
             return Ok(Element::new([self.indices[s], row_idx], self.data[s]));
         } else {
             return Err(StorageError::ReadEmptyRowError(format!(
-                "Invalid col_pos: {}", s
+                "Invalid col_pos: {}",
+                s
             )));
         }
     }
@@ -1543,7 +1534,11 @@ impl<'a> PriorityCache<'a> {
 
     pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
         while self.priority_queue.len() > 0 && (self.cur_num + space_required > self.capability) {
-            trace_print!("freeup_space: cur_num: {} space_required: {}", self.cur_num, space_required);
+            trace_print!(
+                "freeup_space: cur_num: {} space_required: {}",
+                self.cur_num,
+                space_required
+            );
             let mut popid: [usize; 2];
             loop {
                 popid = self.priority_queue_pop().unwrap();
@@ -1711,11 +1706,16 @@ impl<'a> PriorityCache<'a> {
         return rowid >= self.output_base_addr;
     }
 
-    pub fn read_scalars(&mut self, a_loc: [usize; 2], col_s: usize, num: usize) -> Option<Vec<Element>> {
+    pub fn read_scalars(
+        &mut self,
+        a_loc: [usize; 2],
+        col_s: usize,
+        num: usize,
+    ) -> Option<Vec<Element>> {
         match self.read_cache(a_loc.clone()) {
             Some(csrrow) => {
                 let elements = csrrow.as_element_vec();
-                Some(elements[col_s..min(col_s+num, elements.len())].to_vec())
+                Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
             }
             None => {
                 if self.is_psum_row(a_loc[1]) {
@@ -1727,7 +1727,7 @@ impl<'a> PriorityCache<'a> {
                             }
                             self.write(csrrow.clone(), a_loc);
                             let elements = csrrow.as_element_vec();
-                            Some(elements[col_s..min(col_s+num, elements.len())].to_vec())
+                            Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
                         }
                         Err(_) => None,
                     }
@@ -1740,7 +1740,7 @@ impl<'a> PriorityCache<'a> {
                             }
                             self.write(csrrow.clone(), a_loc);
                             let elements = csrrow.as_element_vec();
-                            Some(elements[col_s..min(col_s+num, elements.len())].to_vec())
+                            Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
                         }
                         Err(_) => None,
                     }

@@ -5,14 +5,14 @@ mod frontend;
 mod gemm;
 mod oracle_storage_traffic_model;
 mod pipeline_simu;
+mod pqcache_omega_simulator;
 mod pqcache_storage_traffic_model;
 mod preprocessing;
 mod py2rust;
+mod scheduler;
 mod storage;
 mod storage_traffic_model;
 mod util;
-mod pqcache_omega_simulator;
-mod scheduler;
 
 use std::cmp::min;
 
@@ -22,12 +22,12 @@ use storage_traffic_model::TrafficModel;
 
 use crate::frontend::{parse_config, Accelerator, Cli, Simulator, WorkloadCate};
 use crate::pipeline_simu::PipelineSimulator;
+use crate::pqcache_omega_simulator::CycleAccurateSimulator;
 use crate::preprocessing::{affinity_based_row_reordering, sort_by_length};
-use crate::py2rust::{load_pickled_gemms, load_mm_mat};
+use crate::py2rust::{load_mm_mat, load_pickled_gemms};
 use crate::storage::CsrMatStorage;
 use b_reuse_counter::BReuseCounter;
 use structopt::StructOpt;
-use crate::pqcache_omega_simulator::CycleAccurateSimulator;
 
 // Workload included:
 // ss: ['2cubes_sphere', 'amazon0312', 'ca-CondMat', 'cage12', 'cit-Patents',
@@ -52,12 +52,12 @@ fn main() {
     match cli.category {
         WorkloadCate::NN => {
             gemm = load_pickled_gemms(&omega_config.nn_filepath, &cli.workload).unwrap();
-        },
+        }
         WorkloadCate::SS => {
             let mat = load_mm_mat(&omega_config.ss_filepath, &cli.workload).unwrap();
             gemm = GEMM::from_mat(&cli.workload, mat);
             // gemm = load_pickled_gemms(&omega_config.ss_filepath, &cli.workload).unwrap();
-        },
+        }
         WorkloadCate::Desired => {
             gemm = load_pickled_gemms(&omega_config.desired_filepath, &cli.workload).unwrap();
         }
@@ -287,7 +287,10 @@ fn main() {
             // //     affinity_collect.values().filter(|&x| *x >= 4).count());
             // println!("Nonzero entries: {}", b_reuse_counter.b_mem.get_nonzero());
             println!("Oracle fetch: {}", oracle_fetch.len());
-            println!("Oracle blocked fetch: {}", oracle_blocked_fetch.values().sum::<usize>());
+            println!(
+                "Oracle blocked fetch: {}",
+                oracle_blocked_fetch.values().sum::<usize>()
+            );
             // println!("Cache restricted fetch: {}", cache_restricted_collect.values().sum::<usize>());
             // println!("{} blocked fetch: {}", block_num, blocked_fetch.values().sum::<usize>());
             // println!("Total reuse: {} improved reuse: {}, improved ratio: {:.2}", improved_reuse.0, improved_reuse.1, improved_reuse.2);

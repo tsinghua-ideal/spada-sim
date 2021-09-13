@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use std::cmp::{max, min};
+use std::collections::HashMap;
 
-use crate::storage::CsrMatStorage;
-use crate::pqcache_omega_simulator::{PE};
 use crate::frontend::Accelerator;
+use crate::pqcache_omega_simulator::PE;
+use crate::storage::CsrMatStorage;
 use crate::trace_print;
 
 #[derive(Debug, Clone)]
@@ -14,10 +14,7 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn new(
-        anchor: [usize; 2],
-        shape: [usize; 2],
-        is_merge_block: bool) -> Block {
+    pub fn new(anchor: [usize; 2], shape: [usize; 2], is_merge_block: bool) -> Block {
         Block {
             anchor,
             shape,
@@ -99,7 +96,7 @@ impl ExecTracker {
 pub struct BlockTracker {
     pub row_s_list: Vec<usize>,
     pub col_s_list: Vec<Vec<usize>>,
-    pub exec_logs: HashMap<[usize; 2], ExecTracker>
+    pub exec_logs: HashMap<[usize; 2], ExecTracker>,
 }
 
 impl BlockTracker {
@@ -170,7 +167,7 @@ impl BlockTracker {
 #[derive(Debug, Clone)]
 struct MergeTracker {
     pub asgnd_col_ranges: HashMap<usize, Vec<[usize; 2]>>, // assigned row -> assigned col ranges.
-    pub pending_psums: HashMap<usize, Vec<usize>> // pending psums row -> psums
+    pub pending_psums: HashMap<usize, Vec<usize>>,         // pending psums row -> psums
 }
 
 impl MergeTracker {
@@ -218,7 +215,7 @@ pub fn parse_group(matrix: &CsrMatStorage, var_factor: f32) -> GroupTracker {
     let mut row_s = 0;
 
     // Parse matrix.
-    for idx in 0..matrix.row_num()+1 {
+    for idx in 0..matrix.row_num() + 1 {
         if idx == matrix.row_num() {
             // Finish the last group.
             let gi = GroupInfo {
@@ -228,13 +225,15 @@ pub fn parse_group(matrix: &CsrMatStorage, var_factor: f32) -> GroupTracker {
             };
             gt.add_group(gi);
         } else {
-            let row_len = matrix.get_ele_num(idx, idx+1);
+            let row_len = matrix.get_ele_num(idx, idx + 1);
             if row_len == 0 {
                 continue;
             } else if prev_row_len == usize::MAX {
                 // Init the first group.
                 prev_row_len = row_len;
-            } else if prev_row_len as f32 * var_factor < row_len as f32 || prev_row_len as f32 > var_factor * row_len as f32 {
+            } else if prev_row_len as f32 * var_factor < row_len as f32
+                || prev_row_len as f32 > var_factor * row_len as f32
+            {
                 // Encounter a new group. Save the current one.
                 let gi = GroupInfo {
                     row_range: [row_s, idx],
@@ -252,7 +251,6 @@ pub fn parse_group(matrix: &CsrMatStorage, var_factor: f32) -> GroupTracker {
 
     return gt;
 }
-
 
 pub struct Scheduler {
     a_traversed: bool,
@@ -294,7 +292,7 @@ impl Scheduler {
         var_factor: f32,
         a_row_num: usize,
         accelerator: Accelerator,
-        ) -> Scheduler {
+    ) -> Scheduler {
         Scheduler {
             a_traversed: false,
             pe_num,
@@ -318,16 +316,17 @@ impl Scheduler {
             set_row_num: usize::MAX,
             a_row_num,
             accelerator,
-            a_row_lens: (0..a_matrix.row_num()).map(|idx| a_matrix.get_ele_num(idx, idx+1)).collect::<Vec<usize>>(),
-            b_row_lens: (0..b_matrix.row_num()).map(|idx| b_matrix.get_ele_num(idx, idx+1)).collect::<Vec<usize>>(),
+            a_row_lens: (0..a_matrix.row_num())
+                .map(|idx| a_matrix.get_ele_num(idx, idx + 1))
+                .collect::<Vec<usize>>(),
+            b_row_lens: (0..b_matrix.row_num())
+                .map(|idx| b_matrix.get_ele_num(idx, idx + 1))
+                .collect::<Vec<usize>>(),
             token_counter: 0,
         }
     }
 
-    pub fn assign_jobs(
-        &mut self,
-        pe: &mut PE,
-        ) -> bool {
+    pub fn assign_jobs(&mut self, pe: &mut PE) -> bool {
         // Check if the workload is finished.
         if self.a_traversed && self.merge_tracker.asgnd_col_ranges.len() == 0 {
             return false;
@@ -342,7 +341,7 @@ impl Scheduler {
                     self.a_traversed = true;
                     self.set_pe(None, None, pe);
                     return false;
-                },
+                }
                 Some(block) => {
                     let win = self.next_window(&block.anchor);
                     self.set_pe(Some(block), win, pe);
@@ -370,7 +369,11 @@ impl Scheduler {
 
     pub fn is_block_finished(&self, blk_idx: &[usize; 2]) -> bool {
         let exec_tracker = self.block_tracker.exec_tracker(blk_idx);
-        for (c, l) in exec_tracker.a_cols_done.iter().zip(exec_tracker.a_col_limits.iter()) {
+        for (c, l) in exec_tracker
+            .a_cols_done
+            .iter()
+            .zip(exec_tracker.a_col_limits.iter())
+        {
             if *c + blk_idx[0] < *l {
                 return false;
             }
@@ -408,7 +411,7 @@ impl Scheduler {
                     self.merge_tracker
                         .asgnd_col_ranges
                         .entry(rowid)
-                        .and_modify(|rngs|{
+                        .and_modify(|rngs| {
                             if rngs.last().unwrap()[1] == block.anchor[0] {
                                 rngs.last_mut().unwrap()[1] = block.anchor[0] + block.shape[1];
                             } else {
@@ -418,8 +421,7 @@ impl Scheduler {
                         .or_insert(vec![[block.anchor[0], block.anchor[0] + block.shape[1]]]);
                 }
                 return Some(block);
-            }
-            else {
+            } else {
                 self.row_s += self.block_shape[1];
                 self.col_s = 0;
                 if self.row_s < self.a_row_num {
@@ -462,17 +464,22 @@ impl Scheduler {
             self.merge_tracker
                 .asgnd_col_ranges
                 .entry(rowid)
-                .and_modify(|rngs|{
-                    match rngs.binary_search_by(|p| p[0].cmp(&block.anchor[0])) {
+                .and_modify(
+                    |rngs| match rngs.binary_search_by(|p| p[0].cmp(&block.anchor[0])) {
                         Ok(pos) => rngs[pos][1] = block.anchor[0] + block.shape[0],
-                        Err(pos) => rngs.insert(pos, [block.anchor[0], block.anchor[0] + block.shape[0]])
-                    }
-                })
+                        Err(pos) => {
+                            rngs.insert(pos, [block.anchor[0], block.anchor[0] + block.shape[0]])
+                        }
+                    },
+                )
                 .or_insert(vec![[block.anchor[0], block.anchor[0] + block.shape[0]]]);
         }
 
         // Config exec tracker.
-        assert!(!self.block_tracker.exec_logs.contains_key(&block.anchor), "Block already added!");
+        assert!(
+            !self.block_tracker.exec_logs.contains_key(&block.anchor),
+            "Block already added!"
+        );
         let a_col_limits = (0..block.shape[1])
             .map(|offset| {
                 let ridx = block.anchor[1] + offset;
@@ -481,14 +488,9 @@ impl Scheduler {
                 min(rlen, btail)
             })
             .collect::<Vec<usize>>();
-        self.block_tracker.exec_logs.insert(
-            block.anchor,
-            ExecTracker::new(
-                block,
-                window,
-                a_col_limits
-        ));
-
+        self.block_tracker
+            .exec_logs
+            .insert(block.anchor, ExecTracker::new(block, window, a_col_limits));
     }
 
     pub fn update_window(&mut self, window: Option<Window>, pe: &mut PE) {
@@ -504,7 +506,9 @@ impl Scheduler {
 
         // Config exec tracker.
         let block_idx = pe.block_anchor;
-        self.block_tracker.exec_tracker_mut(&block_idx).set_window(window);
+        self.block_tracker
+            .exec_tracker_mut(&block_idx)
+            .set_window(window);
     }
 
     pub fn is_block_valid(&self, row_s: usize, row_num: usize, col_s: usize) -> bool {
@@ -520,9 +524,7 @@ impl Scheduler {
     }
 
     pub fn is_col_s_valid(&self, rowid: usize, col_s: usize) -> bool {
-        if (rowid >= self.a_row_num)
-            || (self.a_row_lens[rowid] <= col_s)
-        {
+        if (rowid >= self.a_row_num) || (self.a_row_lens[rowid] <= col_s) {
             return false;
         } else {
             return true;
@@ -605,7 +607,7 @@ impl Scheduler {
                             self.row_group = self.a_group.rgmap[&self.row_s];
                             let cur_gi = &self.a_group.groups[self.row_group];
                             if cur_gi.row_range[1] - cur_gi.row_range[0] > group_diviser {
-                                let mut cur_row = self.row_s+1;
+                                let mut cur_row = self.row_s + 1;
                                 let mut i = 1;
                                 self.sampling_bounds.clear();
                                 while i <= self.lane_num {
@@ -628,38 +630,53 @@ impl Scheduler {
                                     let mut min_cost = f32::MAX;
                                     let mut cur_row_num = 1;
                                     while cur_row_num <= self.lane_num {
-                                        if let Some(cost_num) =
-                                            self.a_group.groups[self.row_group].cost_num.get_mut(&cur_row_num) {
-                                                let div_cost = cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
+                                        if let Some(cost_num) = self.a_group.groups[self.row_group]
+                                            .cost_num
+                                            .get_mut(&cur_row_num)
+                                        {
+                                            let div_cost =
+                                                cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
                                             if div_cost < min_cost {
                                                 min_cost = div_cost;
                                                 self.set_row_num = cur_row_num;
                                             }
                                         } else {
-                                            self.a_group.groups[self.row_group].cost_num.insert(cur_row_num, [0, 0]);
+                                            self.a_group.groups[self.row_group]
+                                                .cost_num
+                                                .insert(cur_row_num, [0, 0]);
                                             self.set_row_num = cur_row_num;
                                             break;
                                         }
                                         cur_row_num *= 2;
                                     }
-                                    while cur_row_num > 1 && (self.row_s + cur_row_num >= self.a_group.groups[self.row_group].row_range[1]) {
+                                    while cur_row_num > 1
+                                        && (self.row_s + cur_row_num
+                                            >= self.a_group.groups[self.row_group].row_range[1])
+                                    {
                                         cur_row_num /= 2;
                                     }
                                 }
                                 min_row_num = self.set_row_num;
-
                             } else {
                                 // Sampling.
                                 trace_print!("---Sampling");
-                                min_row_num = match self.sampling_bounds.binary_search(&(self.row_s)) {
-                                    Ok(idx) => 2usize.pow(idx as u32+1),
-                                    Err(idx) => 2usize.pow(idx as u32),
-                                };
+                                min_row_num =
+                                    match self.sampling_bounds.binary_search(&(self.row_s)) {
+                                        Ok(idx) => 2usize.pow(idx as u32 + 1),
+                                        Err(idx) => 2usize.pow(idx as u32),
+                                    };
                             }
-                            while min_row_num > 1 && (self.row_s + min_row_num >= self.a_group.groups[self.row_group].row_range[1]) {
+                            while min_row_num > 1
+                                && (self.row_s + min_row_num
+                                    >= self.a_group.groups[self.row_group].row_range[1])
+                            {
                                 min_row_num /= 2;
                             }
-                            trace_print!("group_range {:?} cost num: {:?}", &self.a_group.groups[self.row_group].row_range, self.a_group.groups[self.row_group].cost_num);
+                            trace_print!(
+                                "group_range {:?} cost num: {:?}",
+                                &self.a_group.groups[self.row_group].row_range,
+                                self.a_group.groups[self.row_group].cost_num
+                            );
                             self.block_shape[1] = min_row_num;
                         } else {
                             // Treat the narrow groups.
@@ -669,9 +686,8 @@ impl Scheduler {
                             }
                             let n1_block = n1_block.unwrap();
                             let n1_row_num = cur_idx[1] - n1_block[1];
-                            let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x| {
-                                s + self.a_row_lens[x]
-                            });
+                            let n1_ele_size =
+                                (n1_block[1]..cur_idx[1]).fold(0, |s, x| s + self.a_row_lens[x]);
 
                             let n2_block = self.block_tracker.find_above(&n1_block);
                             if n2_block.is_none() {
@@ -679,15 +695,16 @@ impl Scheduler {
                             }
                             let n2_block = n2_block.unwrap();
                             let n2_row_num = n1_block[1] - n2_block[1];
-                            let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| {
-                                s + self.a_row_lens[x]
-                            });
+                            let n2_ele_size =
+                                (n2_block[1]..n1_block[1]).fold(0, |s, x| s + self.a_row_lens[x]);
 
-                            let n1_cost = (self.block_tracker.exec_tracker(&n1_block).miss_size +
-                                self.block_tracker.exec_tracker(&n1_block).psum_rw_size[0]) * 100
+                            let n1_cost = (self.block_tracker.exec_tracker(&n1_block).miss_size
+                                + self.block_tracker.exec_tracker(&n1_block).psum_rw_size[0])
+                                * 100
                                 + self.block_tracker.exec_tracker(&n1_block).psum_rw_size[1];
-                            let n2_cost = (self.block_tracker.exec_tracker(&n2_block).miss_size +
-                                self.block_tracker.exec_tracker(&n2_block).psum_rw_size[0]) * 100
+                            let n2_cost = (self.block_tracker.exec_tracker(&n2_block).miss_size
+                                + self.block_tracker.exec_tracker(&n2_block).psum_rw_size[0])
+                                * 100
                                 + self.block_tracker.exec_tracker(&n2_block).psum_rw_size[1];
 
                             trace_print!(
@@ -699,7 +716,8 @@ impl Scheduler {
                                 <= (n2_cost as f32 / n2_ele_size as f32)
                             {
                                 if n1_row_num >= n2_row_num {
-                                    self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                                    self.block_shape[1] =
+                                        min(self.block_shape[1] * 2, self.lane_num);
                                 } else {
                                     self.block_shape[1] = max(self.block_shape[1] / 2, 1);
                                 }
@@ -707,11 +725,15 @@ impl Scheduler {
                                 if n1_row_num >= n2_row_num {
                                     self.block_shape[1] = max(self.block_shape[1] / 2, 1);
                                 } else {
-                                    self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                                    self.block_shape[1] =
+                                        min(self.block_shape[1] * 2, self.lane_num);
                                 }
                             }
 
-                            while self.block_shape[1] > 1 && (self.row_s + self.block_shape[1] >= self.a_group.groups[self.row_group].row_range[1]) {
+                            while self.block_shape[1] > 1
+                                && (self.row_s + self.block_shape[1]
+                                    >= self.a_group.groups[self.row_group].row_range[1])
+                            {
                                 self.block_shape[1] /= 2;
                             }
                         }

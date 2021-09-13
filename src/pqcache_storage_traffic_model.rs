@@ -9,12 +9,12 @@ use itertools::{izip, merge, merge_join_by, Itertools, Merge, MergeJoinBy};
 use storage::{LRUCache, LRURandomCache, PriorityCache, RandomCache, VectorStorage};
 
 use crate::frontend::Accelerator;
+use crate::trace_print;
+use crate::util::gen_rands_from_range;
 use crate::{
     print_type_of,
     storage::{self, CsrMatStorage, CsrRow, StorageAPI},
 };
-use crate::trace_print;
-use crate::util::gen_rands_from_range;
 
 #[derive(Debug, Clone)]
 struct PE {
@@ -214,7 +214,7 @@ pub fn parse_group(matrix: &CsrMatStorage, var_factor: f32) -> GroupTracker {
     let mut row_s = 0;
 
     // Parse matrix.
-    for idx in 0..matrix.row_num()+1 {
+    for idx in 0..matrix.row_num() + 1 {
         if idx == matrix.row_num() {
             // Finish the last group.
             let gi = GroupInfo {
@@ -224,13 +224,15 @@ pub fn parse_group(matrix: &CsrMatStorage, var_factor: f32) -> GroupTracker {
             };
             gt.add_group(gi);
         } else {
-            let row_len = matrix.get_ele_num(idx, idx+1);
+            let row_len = matrix.get_ele_num(idx, idx + 1);
             if row_len == 0 {
                 continue;
             } else if prev_row_len == usize::MAX {
                 // Init the first group.
                 prev_row_len = row_len;
-            } else if prev_row_len as f32 * var_factor < row_len as f32 || prev_row_len as f32 > var_factor * row_len as f32 {
+            } else if prev_row_len as f32 * var_factor < row_len as f32
+                || prev_row_len as f32 > var_factor * row_len as f32
+            {
                 // Encounter a new group. Save the current one.
                 let gi = GroupInfo {
                     row_range: [row_s, idx],
@@ -305,16 +307,25 @@ impl<'a> TrafficModel<'a> {
         let b_group = parse_group(&b_mem, var_factor);
 
         trace_print!("-- a_group:");
-        let a_rg = a_group.groups.iter().map(|gi| gi.row_range).collect::<Vec<[usize; 2]>>();
+        let a_rg = a_group
+            .groups
+            .iter()
+            .map(|gi| gi.row_range)
+            .collect::<Vec<[usize; 2]>>();
         trace_print!("{:?}", &a_rg);
         trace_print!("-- b_group:");
-        let b_rg = b_group.groups.iter().map(|gi| gi.row_range).collect::<Vec<[usize; 2]>>();
+        let b_rg = b_group
+            .groups
+            .iter()
+            .map(|gi| gi.row_range)
+            .collect::<Vec<[usize; 2]>>();
         trace_print!("{:?}", &b_rg);
 
         // Init from the inner-product dataflow.
         // Can be changed to be adaptive.
         TrafficModel {
-            b_sparsity: 1.0 - b_mem.data.len() as f32 / (b_mem.row_num() * b_mem.mat_shape[0]) as f32,
+            b_sparsity: 1.0
+                - b_mem.data.len() as f32 / (b_mem.row_num() * b_mem.mat_shape[0]) as f32,
             a_traversed: false,
             reduction_window: default_reduction_window.clone(),
             pe_num: pe_num,
@@ -366,7 +377,8 @@ impl<'a> TrafficModel<'a> {
             trace_print!("----");
             trace_print!(
                 "merge counter: {}, merge period: {}",
-                self.merge_counter, self.merge_period
+                self.merge_counter,
+                self.merge_period
             );
             self.exec_round += 1;
             // Assign jobs to PEs. If no jobs can be assigned, end execution.
@@ -387,7 +399,8 @@ impl<'a> TrafficModel<'a> {
             // Each PE execute a window.
             for i in 0..self.pe_num {
                 let tmp_b_r = self.fiber_cache.b_mem.read_count;
-                let tmp_psum_mem_rw = self.fiber_cache.psum_mem.read_count + self.fiber_cache.psum_mem.write_count;
+                let tmp_psum_mem_rw =
+                    self.fiber_cache.psum_mem.read_count + self.fiber_cache.psum_mem.write_count;
                 let tmp_cache_rw = self.fiber_cache.read_count + self.fiber_cache.write_count;
 
                 // Find if the pe is uninitialized.
@@ -438,7 +451,7 @@ impl<'a> TrafficModel<'a> {
                 }
 
                 // Update work mode.
-                let pe = & self.pes[i];
+                let pe = &self.pes[i];
                 if self.pes[i].merge_mode {
                     for row in rowidxs.iter() {
                         self.merge_queue.push(*row);
@@ -518,19 +531,20 @@ impl<'a> TrafficModel<'a> {
 
                 // Calc exec info.
                 let delta_b_mem = self.fiber_cache.b_mem.read_count - tmp_b_r;
-                let delta_c_mem = self.fiber_cache.psum_mem.read_count +
-                    self.fiber_cache.psum_mem.write_count - tmp_psum_mem_rw;
-                let delta_cache = self.fiber_cache.read_count +
-                    self.fiber_cache.write_count - tmp_cache_rw;
+                let delta_c_mem = self.fiber_cache.psum_mem.read_count
+                    + self.fiber_cache.psum_mem.write_count
+                    - tmp_psum_mem_rw;
+                let delta_cache =
+                    self.fiber_cache.read_count + self.fiber_cache.write_count - tmp_cache_rw;
 
                 // Update exec_counter.
-                let tracker = self.exec_trackers
+                let tracker = self
+                    .exec_trackers
                     .get_mut(&self.pes[i].cur_block.get_idx())
                     .unwrap();
                 tracker.miss_size += delta_b_mem;
                 tracker.psum_rw_size[0] += delta_c_mem;
                 tracker.psum_rw_size[1] += delta_cache;
-
             }
 
             trace_print!(
@@ -589,7 +603,8 @@ impl<'a> TrafficModel<'a> {
                     if self.fiber_cache.rowmap.contains_key(&psum_addrs[0]) {
                         trace_print!(
                             "Assign jobs: swapout addr {} of {} with size {}",
-                            psum_addrs[0], self.merge_queue[i],
+                            psum_addrs[0],
+                            self.merge_queue[i],
                             self.fiber_cache.rowmap.get(&psum_addrs[0]).unwrap().size()
                         );
                     }
@@ -636,18 +651,20 @@ impl<'a> TrafficModel<'a> {
                         let blk_idx = self.pes[pe_no].cur_block.get_idx();
                         let grp_idx = self.a_group.rgmap[&self.pes[i].cur_block.row_s];
                         let row_num = self.pes[i].cur_block.height;
-                        let cost = (self.exec_trackers[&blk_idx].miss_size +
-                            self.exec_trackers[&blk_idx].psum_rw_size[0]) * 100
+                        let cost = (self.exec_trackers[&blk_idx].miss_size
+                            + self.exec_trackers[&blk_idx].psum_rw_size[0])
+                            * 100
                             + self.exec_trackers[&blk_idx].psum_rw_size[1];
-                        let ele_size = (blk_idx[1]..min(blk_idx[1]+row_num, self.a_mem.row_num()))
-                            .fold(0, |ref s, ref x| {
-                            *s + self.a_mem.get_ele_num(*x, *x+1)
-                        });
-                        self.a_group.groups[grp_idx].cost_num
+                        let ele_size = (blk_idx[1]
+                            ..min(blk_idx[1] + row_num, self.a_mem.row_num()))
+                            .fold(0, |ref s, ref x| *s + self.a_mem.get_ele_num(*x, *x + 1));
+                        self.a_group.groups[grp_idx]
+                            .cost_num
                             .entry(row_num)
                             .and_modify(|e| {
                                 e[0] += cost;
-                                e[1] += ele_size; })
+                                e[1] += ele_size;
+                            })
                             .or_insert([cost, ele_size]);
                     }
                     // Try to assign a new block.
@@ -746,8 +763,7 @@ impl<'a> TrafficModel<'a> {
                 self.merge_counter = 0;
                 self.merge_period = self.lane_num / block.height;
                 return Some(block);
-            }
-            else {
+            } else {
                 // Block shape adaptation can be added here. For now we only support adjust block
                 // when finishing traverse over K dim.
                 self.row_s += self.block_shape[1];
@@ -794,9 +810,7 @@ impl<'a> TrafficModel<'a> {
     }
 
     fn is_col_s_valid(&self, rowid: usize, col_s: usize) -> bool {
-        if (rowid >= self.a_mem.row_num())
-            || (self.a_mem.get_ele_num(rowid, rowid+1) <= col_s)
-        {
+        if (rowid >= self.a_mem.row_num()) || (self.a_mem.get_ele_num(rowid, rowid + 1) <= col_s) {
             return false;
         } else {
             return true;
@@ -968,9 +982,8 @@ impl<'a> TrafficModel<'a> {
                         }
                         let n1_block = n1_block.unwrap();
                         let n1_row_num = cur_idx[1] - n1_block[1];
-                        let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x| {
-                            s + self.a_mem.get_ele_num(x, x+1)
-                        });
+                        let n1_ele_size = (n1_block[1]..cur_idx[1])
+                            .fold(0, |s, x| s + self.a_mem.get_ele_num(x, x + 1));
 
                         let n2_block = self.block_topo.find_above(&n1_block);
                         if n2_block.is_none() {
@@ -978,20 +991,24 @@ impl<'a> TrafficModel<'a> {
                         }
                         let n2_block = n2_block.unwrap();
                         let n2_row_num = n1_block[1] - n2_block[1];
-                        let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| {
-                            s + self.a_mem.get_ele_num(x, x+1)
-                        });
+                        let n2_ele_size = (n2_block[1]..n1_block[1])
+                            .fold(0, |s, x| s + self.a_mem.get_ele_num(x, x + 1));
 
-                        let n1_cost = (self.exec_trackers[&n1_block].miss_size +
-                            self.exec_trackers[&n1_block].psum_rw_size[0]) * 100
+                        let n1_cost = (self.exec_trackers[&n1_block].miss_size
+                            + self.exec_trackers[&n1_block].psum_rw_size[0])
+                            * 100
                             + self.exec_trackers[&n1_block].psum_rw_size[1];
-                        let n2_cost = (self.exec_trackers[&n2_block].miss_size +
-                            self.exec_trackers[&n2_block].psum_rw_size[0]) * 100
+                        let n2_cost = (self.exec_trackers[&n2_block].miss_size
+                            + self.exec_trackers[&n2_block].psum_rw_size[0])
+                            * 100
                             + self.exec_trackers[&n2_block].psum_rw_size[1];
 
                         trace_print!(
                             "n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
-                            n1_cost, n1_ele_size, n2_cost, n2_ele_size
+                            n1_cost,
+                            n1_ele_size,
+                            n2_cost,
+                            n2_ele_size
                         );
 
                         if (n1_cost as f32 / n1_ele_size as f32)
@@ -1018,9 +1035,8 @@ impl<'a> TrafficModel<'a> {
                         }
                         let n1_block = n1_block.unwrap();
                         let n1_row_num = cur_idx[1] - n1_block[1];
-                        let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x| {
-                            s + self.a_mem.get_ele_num(x, x+1)
-                        });
+                        let n1_ele_size = (n1_block[1]..cur_idx[1])
+                            .fold(0, |s, x| s + self.a_mem.get_ele_num(x, x + 1));
 
                         let n2_block = self.block_topo.find_above(&n1_block);
                         if n2_block.is_none() {
@@ -1028,24 +1044,27 @@ impl<'a> TrafficModel<'a> {
                         }
                         let n2_block = n2_block.unwrap();
                         let n2_row_num = n1_block[1] - n2_block[1];
-                        let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| {
-                            s + self.a_mem.get_ele_num(x, x+1)
-                        });
+                        let n2_ele_size = (n2_block[1]..n1_block[1])
+                            .fold(0, |s, x| s + self.a_mem.get_ele_num(x, x + 1));
 
-                        let n1_cost = (self.exec_trackers[&n1_block].miss_size +
-                            self.exec_trackers[&n1_block].psum_rw_size[0]) * 100
+                        let n1_cost = (self.exec_trackers[&n1_block].miss_size
+                            + self.exec_trackers[&n1_block].psum_rw_size[0])
+                            * 100
                             + self.exec_trackers[&n1_block].psum_rw_size[1];
-                        let n2_cost = (self.exec_trackers[&n2_block].miss_size +
-                            self.exec_trackers[&n2_block].psum_rw_size[0]) * 100
+                        let n2_cost = (self.exec_trackers[&n2_block].miss_size
+                            + self.exec_trackers[&n2_block].psum_rw_size[0])
+                            * 100
                             + self.exec_trackers[&n2_block].psum_rw_size[1];
 
                         let mut max_cachable_row = 0;
                         let mut exp_psum_size = 0.0;
                         let mut temp_idx = cur_idx[1];
-                        while max_cachable_row <= self.lane_num - 1 &&
-                            temp_idx < self.a_mem.row_num() {
-                            let row_num = self.a_mem.get_ele_num(temp_idx, temp_idx+1);
-                            let merged_psum_row = (1.0 - self.b_sparsity.powi(row_num as i32)) * self.fiber_cache.b_mem.mat_shape[0] as f32;
+                        while max_cachable_row <= self.lane_num - 1
+                            && temp_idx < self.a_mem.row_num()
+                        {
+                            let row_num = self.a_mem.get_ele_num(temp_idx, temp_idx + 1);
+                            let merged_psum_row = (1.0 - self.b_sparsity.powi(row_num as i32))
+                                * self.fiber_cache.b_mem.mat_shape[0] as f32;
                             exp_psum_size += merged_psum_row * 2.0;
                             if exp_psum_size > self.fiber_cache.capability as f32 {
                                 break;
@@ -1078,7 +1097,9 @@ impl<'a> TrafficModel<'a> {
                         }
 
                         while self.block_shape[1] > max_cachable_row {
-                            if self.block_shape[1] == 1 { break; }
+                            if self.block_shape[1] == 1 {
+                                break;
+                            }
                             self.block_shape[1] = max(self.block_shape[1] / 2, 1);
                         }
                     }
@@ -1097,39 +1118,44 @@ impl<'a> TrafficModel<'a> {
                         let mut min_cost = f32::MAX;
                         let mut cur_row_num = 1;
                         while cur_row_num <= self.lane_num {
-                            if let Some(cost_num) =
-                                self.a_group.groups[self.row_group].cost_num.get_mut(&cur_row_num) {
+                            if let Some(cost_num) = self.a_group.groups[self.row_group]
+                                .cost_num
+                                .get_mut(&cur_row_num)
+                            {
                                 let div_cost = cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
                                 if div_cost < min_cost {
                                     min_cost = div_cost;
                                     min_row_num = cur_row_num;
                                 }
                             } else {
-                                self.a_group.groups[self.row_group].cost_num.insert(cur_row_num, [0, 0]);
+                                self.a_group.groups[self.row_group]
+                                    .cost_num
+                                    .insert(cur_row_num, [0, 0]);
                                 min_row_num = cur_row_num;
                                 break;
                             }
                             cur_row_num *= 2;
                         }
 
-                        // Avoid unecessary psum writeback by estimate the max cachable row num. 
+                        // Avoid unecessary psum writeback by estimate the max cachable row num.
                         let mut max_cachable_row = 0;
                         let mut exp_psum_size = 0.0;
                         let mut temp_idx = cur_idx[1];
-                        while max_cachable_row <= self.lane_num - 1 &&
-                            temp_idx < self.a_mem.row_num() {
+                        while max_cachable_row <= self.lane_num - 1
+                            && temp_idx < self.a_mem.row_num()
+                        {
                             // trace_print!("rgmap: {:?}, rowptr: {}", self.b_group.rgmap.keys(), self.a_mem.rowptr(temp_idx+1));
 
-                            if self.a_mem.get_ele_num(temp_idx, temp_idx+1) == 0 {
+                            if self.a_mem.get_ele_num(temp_idx, temp_idx + 1) == 0 {
                                 max_cachable_row += 1;
                                 temp_idx += 1;
                                 continue;
                             }
                             let idx_s = self.a_mem.rowptr(temp_idx);
                             // let idx_t = self.a_mem.rowptr(temp_idx+1);
-                            let idx_t = idx_s + self.a_mem.get_ele_num(temp_idx, temp_idx+1);
+                            let idx_t = idx_s + self.a_mem.get_ele_num(temp_idx, temp_idx + 1);
                             let brow_s = self.a_mem.indices[idx_s];
-                            let brow_t = self.a_mem.indices[idx_t-1];
+                            let brow_t = self.a_mem.indices[idx_t - 1];
                             let bg_s = self.b_group.rgmap[&brow_s];
                             let bg_t = self.b_group.rgmap[&brow_t];
                             let b_width = self.fiber_cache.b_mem.mat_shape[0];
@@ -1140,16 +1166,21 @@ impl<'a> TrafficModel<'a> {
                                 group_row_num[idx] += 1;
                             }
 
-                            let product_sparsity = self.b_group.groups[bg_s..bg_t+1]
+                            let product_sparsity = self.b_group.groups[bg_s..bg_t + 1]
                                 .iter()
                                 .zip(group_row_num.iter())
                                 .fold(1.0, |p, x| {
-                                    p * ((b_width - x.0.avg_row_len) as f32 / b_width as f32).powi(*x.1 as i32)
-                                }
-                            );
+                                    p * ((b_width - x.0.avg_row_len) as f32 / b_width as f32)
+                                        .powi(*x.1 as i32)
+                                });
                             let merged_psum_row = (1.0 - product_sparsity) * b_width as f32;
                             exp_psum_size += merged_psum_row * 2.0;
-                            trace_print!("brow_s {} brow_t {} merged_psum_row {}", brow_s, brow_t, merged_psum_row);
+                            trace_print!(
+                                "brow_s {} brow_t {} merged_psum_row {}",
+                                brow_s,
+                                brow_t,
+                                merged_psum_row
+                            );
                             if exp_psum_size * 2.0 > self.fiber_cache.capability as f32 {
                                 break;
                             }
@@ -1168,8 +1199,10 @@ impl<'a> TrafficModel<'a> {
                         );
 
                         while min_row_num > max_cachable_row {
-                            if  min_row_num == 1 { break; }
-                             min_row_num = max( min_row_num / 2, 1);
+                            if min_row_num == 1 {
+                                break;
+                            }
+                            min_row_num = max(min_row_num / 2, 1);
                         }
 
                         self.block_shape[1] = min_row_num;
@@ -1189,9 +1222,8 @@ impl<'a> TrafficModel<'a> {
                         }
                         let n1_block = n1_block.unwrap();
                         let n1_row_num = cur_idx[1] - n1_block[1];
-                        let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x| {
-                            s + self.a_mem.get_ele_num(x, x+1)
-                        });
+                        let n1_ele_size = (n1_block[1]..cur_idx[1])
+                            .fold(0, |s, x| s + self.a_mem.get_ele_num(x, x + 1));
 
                         let n2_block = self.block_topo.find_above(&n1_block);
                         if n2_block.is_none() {
@@ -1199,36 +1231,37 @@ impl<'a> TrafficModel<'a> {
                         }
                         let n2_block = n2_block.unwrap();
                         let n2_row_num = n1_block[1] - n2_block[1];
-                        let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| {
-                            s + self.a_mem.get_ele_num(x, x+1)
-                        });
+                        let n2_ele_size = (n2_block[1]..n1_block[1])
+                            .fold(0, |s, x| s + self.a_mem.get_ele_num(x, x + 1));
 
-                        let n1_cost = (self.exec_trackers[&n1_block].miss_size +
-                            self.exec_trackers[&n1_block].psum_rw_size[0]) * 100
+                        let n1_cost = (self.exec_trackers[&n1_block].miss_size
+                            + self.exec_trackers[&n1_block].psum_rw_size[0])
+                            * 100
                             + self.exec_trackers[&n1_block].psum_rw_size[1];
-                        let n2_cost = (self.exec_trackers[&n2_block].miss_size +
-                            self.exec_trackers[&n2_block].psum_rw_size[0]) * 100
+                        let n2_cost = (self.exec_trackers[&n2_block].miss_size
+                            + self.exec_trackers[&n2_block].psum_rw_size[0])
+                            * 100
                             + self.exec_trackers[&n2_block].psum_rw_size[1];
 
-                        // Avoid unecessary psum writeback by estimate the max cachable row num. 
+                        // Avoid unecessary psum writeback by estimate the max cachable row num.
                         let mut max_cachable_row = 0;
                         let mut exp_psum_size = 0.0;
                         let mut temp_idx = cur_idx[1];
-                        while max_cachable_row <= self.lane_num - 1 &&
-                            temp_idx < self.a_mem.row_num() {
+                        while max_cachable_row <= self.lane_num - 1
+                            && temp_idx < self.a_mem.row_num()
+                        {
                             // trace_print!("rgmap: {:?}, rowptr: {}", self.b_group.rgmap.keys(), self.a_mem.rowptr(temp_idx+1));
                             let idx_s = self.a_mem.rowptr(temp_idx);
                             // let idx_t = self.a_mem.rowptr(temp_idx+1);
-                            let idx_t = idx_s + self.a_mem.get_ele_num(temp_idx, temp_idx+1);
+                            let idx_t = idx_s + self.a_mem.get_ele_num(temp_idx, temp_idx + 1);
                             let brow_s = self.a_mem.indices[idx_s];
-                            let brow_t = self.a_mem.indices[idx_t-1];
+                            let brow_t = self.a_mem.indices[idx_t - 1];
                             let bg_s = self.b_group.rgmap[&brow_s];
                             let bg_t = self.b_group.rgmap[&brow_t];
                             let b_width = self.fiber_cache.b_mem.mat_shape[0];
-                            let product_sparsity = self.b_group.groups[bg_s..bg_t+1]
+                            let product_sparsity = self.b_group.groups[bg_s..bg_t + 1]
                                 .iter()
-                                .fold(1.0, |p, x|
-                                p * x.avg_row_len as f32 / b_width as f32);
+                                .fold(1.0, |p, x| p * x.avg_row_len as f32 / b_width as f32);
                             let merged_psum_row = (1.0 - product_sparsity) * b_width as f32;
                             // Include index & value.
                             exp_psum_size += merged_psum_row * 2.0;
@@ -1266,7 +1299,9 @@ impl<'a> TrafficModel<'a> {
                         }
 
                         while self.block_shape[1] > max_cachable_row {
-                            if self.block_shape[1] == 1 { break; }
+                            if self.block_shape[1] == 1 {
+                                break;
+                            }
                             self.block_shape[1] = max(self.block_shape[1] / 2, 1);
                         }
                     }
@@ -1290,25 +1325,35 @@ impl<'a> TrafficModel<'a> {
                         let mut min_cost = f32::MAX;
                         let mut cur_row_num = 1;
 
-                        trace_print!("cost num: {:?}", self.a_group.groups[self.row_group].cost_num);
+                        trace_print!(
+                            "cost num: {:?}",
+                            self.a_group.groups[self.row_group].cost_num
+                        );
 
                         while cur_row_num <= self.lane_num {
-                            if let Some(cost_num) =
-                                self.a_group.groups[self.row_group].cost_num.get_mut(&cur_row_num) {
+                            if let Some(cost_num) = self.a_group.groups[self.row_group]
+                                .cost_num
+                                .get_mut(&cur_row_num)
+                            {
                                 let div_cost = cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
                                 if div_cost < min_cost {
                                     min_cost = div_cost;
                                     min_row_num = cur_row_num;
                                 }
                             } else {
-                                self.a_group.groups[self.row_group].cost_num.insert(cur_row_num, [0, 0]);
+                                self.a_group.groups[self.row_group]
+                                    .cost_num
+                                    .insert(cur_row_num, [0, 0]);
                                 min_row_num = cur_row_num;
                                 break;
                             }
                             cur_row_num *= 2;
                         }
 
-                        while cur_row_num > 1 && (self.row_s + cur_row_num >= self.a_group.groups[self.row_group].row_range[1]) {
+                        while cur_row_num > 1
+                            && (self.row_s + cur_row_num
+                                >= self.a_group.groups[self.row_group].row_range[1])
+                        {
                             cur_row_num /= 2;
                         }
 
@@ -1328,7 +1373,7 @@ impl<'a> TrafficModel<'a> {
                             self.row_group = self.a_group.rgmap[&self.row_s];
                             let cur_gi = &self.a_group.groups[self.row_group];
                             if cur_gi.row_range[1] - cur_gi.row_range[0] > group_diviser {
-                                let mut cur_row = self.row_s+1;
+                                let mut cur_row = self.row_s + 1;
                                 let mut i = 1;
                                 self.sampling_bounds.clear();
                                 while i <= self.lane_num {
@@ -1351,38 +1396,53 @@ impl<'a> TrafficModel<'a> {
                                     let mut min_cost = f32::MAX;
                                     let mut cur_row_num = 1;
                                     while cur_row_num <= self.lane_num {
-                                        if let Some(cost_num) =
-                                            self.a_group.groups[self.row_group].cost_num.get_mut(&cur_row_num) {
-                                                let div_cost = cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
+                                        if let Some(cost_num) = self.a_group.groups[self.row_group]
+                                            .cost_num
+                                            .get_mut(&cur_row_num)
+                                        {
+                                            let div_cost =
+                                                cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
                                             if div_cost < min_cost {
                                                 min_cost = div_cost;
                                                 self.set_row_num = cur_row_num;
                                             }
                                         } else {
-                                            self.a_group.groups[self.row_group].cost_num.insert(cur_row_num, [0, 0]);
+                                            self.a_group.groups[self.row_group]
+                                                .cost_num
+                                                .insert(cur_row_num, [0, 0]);
                                             self.set_row_num = cur_row_num;
                                             break;
                                         }
                                         cur_row_num *= 2;
                                     }
-                                    while cur_row_num > 1 && (self.row_s + cur_row_num >= self.a_group.groups[self.row_group].row_range[1]) {
+                                    while cur_row_num > 1
+                                        && (self.row_s + cur_row_num
+                                            >= self.a_group.groups[self.row_group].row_range[1])
+                                    {
                                         cur_row_num /= 2;
                                     }
                                 }
                                 min_row_num = self.set_row_num;
-
                             } else {
                                 // Sampling.
                                 trace_print!("---Sampling");
-                                min_row_num = match self.sampling_bounds.binary_search(&(self.row_s)) {
-                                    Ok(idx) => 2usize.pow(idx as u32+1),
-                                    Err(idx) => 2usize.pow(idx as u32),
-                                };
+                                min_row_num =
+                                    match self.sampling_bounds.binary_search(&(self.row_s)) {
+                                        Ok(idx) => 2usize.pow(idx as u32 + 1),
+                                        Err(idx) => 2usize.pow(idx as u32),
+                                    };
                             }
-                            while min_row_num > 1 && (self.row_s + min_row_num >= self.a_group.groups[self.row_group].row_range[1]) {
+                            while min_row_num > 1
+                                && (self.row_s + min_row_num
+                                    >= self.a_group.groups[self.row_group].row_range[1])
+                            {
                                 min_row_num /= 2;
                             }
-                            trace_print!("group_range {:?} cost num: {:?}", &self.a_group.groups[self.row_group].row_range, self.a_group.groups[self.row_group].cost_num);
+                            trace_print!(
+                                "group_range {:?} cost num: {:?}",
+                                &self.a_group.groups[self.row_group].row_range,
+                                self.a_group.groups[self.row_group].cost_num
+                            );
                             self.block_shape[1] = min_row_num;
                         } else {
                             // Treat the narrow groups.
@@ -1392,9 +1452,8 @@ impl<'a> TrafficModel<'a> {
                             }
                             let n1_block = n1_block.unwrap();
                             let n1_row_num = cur_idx[1] - n1_block[1];
-                            let n1_ele_size = (n1_block[1]..cur_idx[1]).fold(0, |s, x| {
-                                s + self.a_mem.get_ele_num(x, x+1)
-                            });
+                            let n1_ele_size = (n1_block[1]..cur_idx[1])
+                                .fold(0, |s, x| s + self.a_mem.get_ele_num(x, x + 1));
 
                             let n2_block = self.block_topo.find_above(&n1_block);
                             if n2_block.is_none() {
@@ -1402,15 +1461,16 @@ impl<'a> TrafficModel<'a> {
                             }
                             let n2_block = n2_block.unwrap();
                             let n2_row_num = n1_block[1] - n2_block[1];
-                            let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| {
-                                s + self.a_mem.get_ele_num(x, x+1)
-                            });
-    
-                            let n1_cost = (self.exec_trackers[&n1_block].miss_size +
-                                self.exec_trackers[&n1_block].psum_rw_size[0]) * 100
+                            let n2_ele_size = (n2_block[1]..n1_block[1])
+                                .fold(0, |s, x| s + self.a_mem.get_ele_num(x, x + 1));
+
+                            let n1_cost = (self.exec_trackers[&n1_block].miss_size
+                                + self.exec_trackers[&n1_block].psum_rw_size[0])
+                                * 100
                                 + self.exec_trackers[&n1_block].psum_rw_size[1];
-                            let n2_cost = (self.exec_trackers[&n2_block].miss_size +
-                                self.exec_trackers[&n2_block].psum_rw_size[0]) * 100
+                            let n2_cost = (self.exec_trackers[&n2_block].miss_size
+                                + self.exec_trackers[&n2_block].psum_rw_size[0])
+                                * 100
                                 + self.exec_trackers[&n2_block].psum_rw_size[1];
 
                             trace_print!(
@@ -1422,7 +1482,8 @@ impl<'a> TrafficModel<'a> {
                                 <= (n2_cost as f32 / n2_ele_size as f32)
                             {
                                 if n1_row_num >= n2_row_num {
-                                    self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                                    self.block_shape[1] =
+                                        min(self.block_shape[1] * 2, self.lane_num);
                                 } else {
                                     self.block_shape[1] = max(self.block_shape[1] / 2, 1);
                                 }
@@ -1430,15 +1491,18 @@ impl<'a> TrafficModel<'a> {
                                 if n1_row_num >= n2_row_num {
                                     self.block_shape[1] = max(self.block_shape[1] / 2, 1);
                                 } else {
-                                    self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                                    self.block_shape[1] =
+                                        min(self.block_shape[1] * 2, self.lane_num);
                                 }
                             }
 
-                            while self.block_shape[1] > 1 && (self.row_s + self.block_shape[1] >= self.a_group.groups[self.row_group].row_range[1]) {
+                            while self.block_shape[1] > 1
+                                && (self.row_s + self.block_shape[1]
+                                    >= self.a_group.groups[self.row_group].row_range[1])
+                            {
                                 self.block_shape[1] /= 2;
                             }
                         }
-
                     }
                     _ => panic!("Invalid merge scheme:{}", block_adjust_scheme),
                 }
@@ -1546,17 +1610,15 @@ impl<'a> TrafficModel<'a> {
             }
         } else {
             rowidxs = (pe.row_s..min(pe.row_s + pe.reduction_window[1], self.a_mem.row_num()))
-                .filter(|x| {
-                    self.a_mem.get_ele_num(*x, *x+1) as i32 >= 0
-                })
+                .filter(|x| self.a_mem.get_ele_num(*x, *x + 1) as i32 >= 0)
                 .collect();
             let mut broadcast_cache: HashMap<usize, CsrRow> = HashMap::new();
             for rowidx in rowidxs.iter() {
                 let mut r_sfs = CsrRow::new(*rowidx);
-                if self.a_mem.get_ele_num(*rowidx, *rowidx+1) > pe.col_s {
+                if self.a_mem.get_ele_num(*rowidx, *rowidx + 1) > pe.col_s {
                     let ele_num = min(
                         pe.reduction_window[0],
-                        self.a_mem.get_ele_num(*rowidx, *rowidx+1) - pe.col_s,
+                        self.a_mem.get_ele_num(*rowidx, *rowidx + 1) - pe.col_s,
                     );
                     r_sfs = self.a_mem.read(*rowidx, pe.col_s, ele_num).unwrap();
                 }
@@ -1658,7 +1720,7 @@ impl<'a> TrafficModel<'a> {
         for rowid in 0..self.a_mem.row_num() {
             let mut csrrow = CsrRow::new(rowid);
             // if self.a_mem.rowptr(rowid+1) - self.a_mem.rowptr(rowid) > 0 {
-            if self.a_mem.get_ele_num(rowid, rowid+1) > 0 {
+            if self.a_mem.get_ele_num(rowid, rowid + 1) > 0 {
                 let raw_rowid = if self.a_mem.remapped {
                     self.a_mem.row_remap[&rowid]
                 } else {
@@ -1666,8 +1728,11 @@ impl<'a> TrafficModel<'a> {
                 };
                 // let raw_rowid = self.a_mem.row_remap[&rowid];
                 let addrs = self.output_trackers.get(&rowid).unwrap();
-                trace_print!("Get result: row: {} row len: {}", raw_rowid,
-                    self.fiber_cache.psum_mem.data[&addrs[0]].size() / 2);
+                trace_print!(
+                    "Get result: row: {} row len: {}",
+                    raw_rowid,
+                    self.fiber_cache.psum_mem.data[&addrs[0]].size() / 2
+                );
                 assert!(
                     addrs.len() == 1,
                     "Partially merged psums! {:?} of row {}",

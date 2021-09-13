@@ -757,9 +757,7 @@ impl<'a> TrafficModel<'a> {
             }
         } else {
             rowidxs = (pe.row_s..min(pe.row_s + pe.reduction_window[1], self.a_mem.row_num()))
-                .filter(|x| {
-                    self.a_mem.rowptr(*x + 1) as i32 - self.a_mem.rowptr(*x) as i32 >= 0
-                })
+                .filter(|x| self.a_mem.rowptr(*x + 1) as i32 - self.a_mem.rowptr(*x) as i32 >= 0)
                 .collect();
             let mut broadcast_cache: HashMap<usize, CsrRow> = HashMap::new();
             for rowidx in rowidxs.iter() {
@@ -767,9 +765,7 @@ impl<'a> TrafficModel<'a> {
                 if self.a_mem.rowptr(*rowidx + 1) > self.a_mem.rowptr(*rowidx) + pe.col_s {
                     let ele_num = min(
                         pe.reduction_window[0],
-                        self.a_mem.rowptr(*rowidx + 1)
-                            - self.a_mem.rowptr(*rowidx)
-                            - pe.col_s,
+                        self.a_mem.rowptr(*rowidx + 1) - self.a_mem.rowptr(*rowidx) - pe.col_s,
                     );
                     r_sfs = self.a_mem.read(*rowidx, pe.col_s, ele_num).unwrap();
                 }
@@ -1023,9 +1019,7 @@ impl<'a> TrafficModel<'a> {
             // Simple fetch data.
             let mut fiber_idxs = vec![];
             let rowidxs = (row_s..min(row_s + reduction_window[1], self.a_mem.row_num()))
-                .filter(|x| {
-                    self.a_mem.rowptr(*x + 1) as i32 - self.a_mem.rowptr(*x) as i32 >= 0
-                })
+                .filter(|x| self.a_mem.rowptr(*x + 1) as i32 - self.a_mem.rowptr(*x) as i32 >= 0)
                 .collect::<Vec<usize>>();
 
             for rowidx in rowidxs.iter() {
