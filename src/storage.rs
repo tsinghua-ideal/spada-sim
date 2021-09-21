@@ -79,6 +79,12 @@ impl CsrRow {
     pub fn len(&self) -> usize {
         return self.indptr.len();
     }
+
+    pub fn append(&mut self, csrrow: CsrRow) {
+        assert!(self.rowptr == csrrow.rowptr, "Not the same row ({}, {}), cannot be combined!", self.rowptr, csrrow.rowptr);
+        self.data.extend(csrrow.data.iter());
+        self.indptr.extend(&mut csrrow.indptr.iter());
+    }
 }
 
 impl fmt::Display for CsrRow {
@@ -353,6 +359,40 @@ impl CsrMatStorage {
             )));
         }
     }
+
+    pub fn read_scalars(&mut self, row_idx: usize, col_idx: usize, num: usize) -> Result<Vec<Element>, StorageError> {
+        if row_idx >= self.indptr.len() {
+            return Err(StorageError::ReadOverBoundError(format!(
+                "Invalid row_ptr: {}",
+                row_idx
+            )));
+        }
+
+        let row_idx = if self.remapped {
+            self.row_remap[&row_idx]
+        } else {
+            row_idx
+        };
+
+        let cur_row_pos = self.indptr[row_idx];
+        let end_row_pos = self.indptr[row_idx + 1];
+        let s = cur_row_pos + col_idx;
+        if s + num < end_row_pos {
+            let elements = (s..s+num)
+                .map(|idx|
+                Element::new([row_idx, self.indices[idx]], self.data[idx]))
+                .collect::<Vec<Element>>();
+            if self.track_count {
+                self.read_count += elements.len() * 2;
+            }
+            return Ok(elements);
+        } else {
+            return Err(StorageError::ReadEmptyRowError(format!(
+                "Invalid col_pos: {}",
+                s
+            )));
+        }
+    }
 }
 
 pub struct VectorStorage {
@@ -406,7 +446,11 @@ impl StorageAPI for VectorStorage {
         for row in rows.iter_mut() {
             let indptr = row.rowptr;
             indptrs.push(indptr);
-            self.data.insert(indptr, row.clone());
+            // If already exists, append to the previous, otherwise insert it.
+            self.data
+                .entry(indptr)
+                .and_modify(|p|p.append(row.to_owned()))
+                .or_insert(row.to_owned());
             if self.track_count {
                 self.write_count += row.size();
             }
@@ -1746,6 +1790,56 @@ impl<'a> PriorityCache<'a> {
                     }
                 }
             }
+        }
+    }
+
+    pub fn append_psum_to(&mut self, addr: usize, csrrow: CsrRow) {
+        let row_size = csrrow.size();
+        if self.is_psum_row(csrrow.rowptr) {
+            self.psum_occp += row_size;
+        } else {
+            self.b_occp += row_size;
+        }
+
+        // Freeup space first if necessary.
+        if self.cur_num + row_size <= self.capability {
+            self.cur_num += row_size;
+        } else {
+            if let Err(err) = self.freeup_space(row_size) {
+                panic!("{}", err);
+            }
+            self.cur_num += row_size;
+        }
+
+        // If the same addr psum is in the cache, append to current one.
+        if self.rowmap.contains_key(&addr) {
+            let mut psum = self.rowmap.get_mut(&addr).unwrap();
+            psum.append(csrrow);
+        // Otherwise direct write the partial psum into cache.
+        } else {
+            // Track snapshot.
+            if let Some(ref mut snp) = self.snapshot {
+                if !snp.old_pq_row_track.contains_key(&addr) {
+                    if self.valid_pq_row_dict.contains_key(&addr) {
+                        snp.old_pq_row_track
+                            .insert(addr, LogItem::Update(self.valid_pq_row_dict[&addr]));
+                    } else {
+                        snp.old_pq_row_track.insert(addr, LogItem::Insert);
+                    }
+                }
+            }
+            // Update priority status.
+            self.valid_pq_row_dict
+                .entry(addr)
+                .and_modify(|x| *x = max(*x, addr))
+                .or_insert(addr);
+            self.priority_queue_push([self.valid_pq_row_dict[&addr], addr]);
+
+            self.rowmap_insert(addr, csrrow);
+        }
+
+        if self.track_count {
+            self.write_count += row_size;
         }
     }
 }

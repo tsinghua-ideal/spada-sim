@@ -29,6 +29,7 @@ pub struct Window {
     pub shape: [usize; 2],
     pub alloc: Vec<bool>,
     pub idxs: HashMap<[usize; 2], [usize; 2]>,
+    pub token: usize,
 }
 
 impl Window {
@@ -36,12 +37,14 @@ impl Window {
         anchor: [usize; 2],
         shape: [usize; 2],
         idxs: HashMap<[usize; 2], [usize; 2]>,
+        token: usize,
     ) -> Window {
         Window {
             anchor,
             shape,
             alloc: vec![false; shape.iter().product()],
             idxs,
+            token,
         }
     }
 }
@@ -56,17 +59,20 @@ pub struct ExecTracker {
 
     pub b_cols_done: HashMap<[usize; 2], usize>, // Keep track of current executed b columns in the window.
     pub a_cols_done: Vec<usize>,
-    pub a_col_limits: Vec<usize>,
+    pub psum_row_addr_binding: HashMap<usize, usize>, // Bind the psum of a row to a specific addr.
+    pub a_col_remains: Vec<usize>,
     pub block: Block,
     pub window: Window,
+    pub window_token_counter: usize,
 }
 
 impl ExecTracker {
-    pub fn new(block: Block, window: Window, a_col_limits: Vec<usize>) -> ExecTracker {
+    pub fn new(block: Block, window: Window, a_col_remains: Vec<usize>) -> ExecTracker {
         ExecTracker {
             b_cols_done: HashMap::new(),
             a_cols_done: vec![usize::MAX; block.shape[1]],
-            a_col_limits,
+            psum_row_addr_binding: HashMap::new(),
+            a_col_remains,
             block,
             window,
             touched_fiber_size: 0,
@@ -74,6 +80,7 @@ impl ExecTracker {
             output_fiber_size: 0,
             miss_size: 0,
             psum_rw_size: [0, 0],
+            window_token_counter: 0,
         }
     }
 
@@ -167,14 +174,12 @@ impl BlockTracker {
 #[derive(Debug, Clone)]
 struct MergeTracker {
     pub asgnd_col_ranges: HashMap<usize, Vec<[usize; 2]>>, // assigned row -> assigned col ranges.
-    pub pending_psums: HashMap<usize, Vec<usize>>,         // pending psums row -> psums
 }
 
 impl MergeTracker {
     pub fn new() -> MergeTracker {
         MergeTracker {
             asgnd_col_ranges: HashMap::new(),
-            pending_psums: HashMap::new(),
         }
     }
 }
@@ -260,7 +265,7 @@ pub struct Scheduler {
     merge_queue: Vec<usize>,
     block_shape: [usize; 2],
     output_base_addr: usize,
-    output_trackers: HashMap<usize, Vec<usize>>,
+    output_tracker: HashMap<usize, Vec<usize>>,
     row_s: usize,
     col_s: usize,
     merge_tracker: MergeTracker,
@@ -276,8 +281,8 @@ pub struct Scheduler {
     a_row_num: usize,
     accelerator: Accelerator,
     a_row_lens: Vec<usize>,
-    b_row_lens: Vec<usize>,
-    token_counter: usize,
+    pub b_row_lens: HashMap<usize, usize>,
+    merge_block_token: usize,
 }
 
 impl Scheduler {
@@ -301,7 +306,7 @@ impl Scheduler {
             merge_queue: vec![],
             block_shape,
             output_base_addr,
-            output_trackers: HashMap::new(),
+            output_tracker: HashMap::new(),
             row_s: 0,
             col_s: 0,
             merge_tracker: MergeTracker::new(),
@@ -320,9 +325,9 @@ impl Scheduler {
                 .map(|idx| a_matrix.get_ele_num(idx, idx + 1))
                 .collect::<Vec<usize>>(),
             b_row_lens: (0..b_matrix.row_num())
-                .map(|idx| b_matrix.get_ele_num(idx, idx + 1))
-                .collect::<Vec<usize>>(),
-            token_counter: 0,
+                .map(|idx| (idx, b_matrix.get_ele_num(idx, idx + 1)))
+                .collect::<HashMap<usize, usize>>(),
+            merge_block_token: 0,
         }
     }
 
@@ -336,15 +341,21 @@ impl Scheduler {
         // If finished, assign a new block.
         // If not finished, check the current window.
         if pe.block_anchor == [usize::MAX, usize::MAX] || self.is_block_finished(&pe.block_anchor) {
+            // If any merge block is ready, assign the merge block.
+            if let Some((block, window)) = self.merge_task() {
+                self.update_merge(block, window, pe);
+                return true;
+            }
+            // Otherwise allocate a new block.
             match self.next_block() {
                 None => {
                     self.a_traversed = true;
-                    self.set_pe(None, None, pe);
+                    self.update_block(None, None, pe);
                     return false;
                 }
                 Some(block) => {
                     let win = self.next_window(&block.anchor);
-                    self.set_pe(Some(block), win, pe);
+                    self.update_block(Some(block), win, pe);
                     return true;
                 }
             }
@@ -363,16 +374,12 @@ impl Scheduler {
         }
     }
 
-    pub fn update_merge_jobs(&mut self, psum_idxs: Vec<usize>) {
-        // Transform finished scalar-vector job to a new merge job.
-    }
-
     pub fn is_block_finished(&self, blk_idx: &[usize; 2]) -> bool {
         let exec_tracker = self.block_tracker.exec_tracker(blk_idx);
         for (c, l) in exec_tracker
             .a_cols_done
             .iter()
-            .zip(exec_tracker.a_col_limits.iter())
+            .zip(exec_tracker.a_col_remains.iter())
         {
             if *c + blk_idx[0] < *l {
                 return false;
@@ -385,17 +392,12 @@ impl Scheduler {
     pub fn next_block(&mut self) -> Option<Block> {
         loop {
             // Initial adjust of block.
-            if self.row_group == usize::MAX {
-                self.col_s = 0;
+            if self.row_s == 0 && self.col_s == 0 {
                 self.adjust_block([self.col_s, self.row_s]);
             }
             // Return if finished.
             else if self.row_s >= self.a_row_num {
                 return None;
-            }
-            // If any merge block is ready, assign the merge block.
-            else if let Some(mb) = self.ready_merge_block() {
-                return Some(mb);
             }
             // Prefer to allocate along K dim.
             else if self.is_block_valid(self.row_s, self.block_shape[1], self.col_s) {
@@ -405,21 +407,6 @@ impl Scheduler {
                     is_merge_block: false,
                 };
                 self.col_s += self.block_shape[0];
-
-                // Add the new block rows to the merge tracker.
-                for rowid in block.anchor[1]..block.anchor[1] + block.shape[1] {
-                    self.merge_tracker
-                        .asgnd_col_ranges
-                        .entry(rowid)
-                        .and_modify(|rngs| {
-                            if rngs.last().unwrap()[1] == block.anchor[0] {
-                                rngs.last_mut().unwrap()[1] = block.anchor[0] + block.shape[1];
-                            } else {
-                                rngs.push([block.anchor[0], block.anchor[0] + block.shape[1]]);
-                            }
-                        })
-                        .or_insert(vec![[block.anchor[0], block.anchor[0] + block.shape[1]]]);
-                }
                 return Some(block);
             } else {
                 self.row_s += self.block_shape[1];
@@ -431,7 +418,7 @@ impl Scheduler {
         }
     }
 
-    pub fn set_pe(&mut self, block: Option<Block>, window: Option<Window>, pe: &mut PE) {
+    pub fn update_block(&mut self, block: Option<Block>, window: Option<Window>, pe: &mut PE) {
         // Config PE.
         if block.is_none() || window.is_none() {
             pe.stop_stream = true;
@@ -445,8 +432,6 @@ impl Scheduler {
         pe.set_window(&window);
         pe.unbind_win2lane();
         pe.stop_stream = false;
-        pe.block_token = self.token_counter;
-        self.token_counter += 1;
 
         // Config block_tracker.
         if block.anchor[0] == 0 {
@@ -480,17 +465,17 @@ impl Scheduler {
             !self.block_tracker.exec_logs.contains_key(&block.anchor),
             "Block already added!"
         );
-        let a_col_limits = (0..block.shape[1])
+        let a_col_remains = (0..block.shape[1])
             .map(|offset| {
                 let ridx = block.anchor[1] + offset;
                 let rlen = self.a_row_lens[ridx];
-                let btail = block.anchor[0] + block.shape[0];
-                min(rlen, btail)
+                let btail = block.shape[0];
+                min(max(rlen, block.anchor[0]) - block.anchor[0], btail)
             })
             .collect::<Vec<usize>>();
         self.block_tracker
             .exec_logs
-            .insert(block.anchor, ExecTracker::new(block, window, a_col_limits));
+            .insert(block.anchor, ExecTracker::new(block, window, a_col_remains));
     }
 
     pub fn update_window(&mut self, window: Option<Window>, pe: &mut PE) {
@@ -506,9 +491,31 @@ impl Scheduler {
 
         // Config exec tracker.
         let block_idx = pe.block_anchor;
+        let exec_tracker = self.block_tracker.exec_tracker_mut(&block_idx);
+        exec_tracker.set_window(window);
+        for i in 0..exec_tracker.window.shape[1] {
+            exec_tracker.psum_row_addr_binding.insert(i, self.output_base_addr);
+            self.output_base_addr += 1;
+        }
+    }
+
+    pub fn update_merge(&mut self, block: Block, window: Window, pe: &mut PE) {
+        // Config PE.
+        pe.set_block(&block);
+        pe.set_window(&window);
+        pe.unbind_win2lane();
+        pe.stop_stream = false;
+        pe.merge_mode = true;
+
+        // Config exec tracker.
+        assert!(
+            !self.block_tracker.exec_logs.contains_key(&block.anchor),
+            "Block already added!"
+        );
+        let a_col_remains = vec![2; block.shape[1]];
         self.block_tracker
-            .exec_tracker_mut(&block_idx)
-            .set_window(window);
+            .exec_logs
+            .insert(block.anchor, ExecTracker::new(block, window, a_col_remains));
     }
 
     pub fn is_block_valid(&self, row_s: usize, row_num: usize, col_s: usize) -> bool {
@@ -535,12 +542,11 @@ impl Scheduler {
         let exec_tracker = self.block_tracker.exec_tracker(blk_idx);
         for r_offset in 0..exec_tracker.window.shape[1] {
             for c_offset in 0..exec_tracker.window.shape[0] {
-                match exec_tracker.window.idxs.get(&[r_offset, c_offset]) {
+                match exec_tracker.window.idxs.get(&[c_offset, r_offset]) {
                     None => continue,
                     Some(idx) => {
-                        let a_r_idx = exec_tracker.window.anchor[1];
-                        let rlen = self.b_row_lens[idx[1]];
-                        if exec_tracker.b_cols_done[&[a_r_idx, idx[1]]] < rlen {
+                        let rlen = self.b_row_lens[&idx[0]];
+                        if exec_tracker.b_cols_done[idx] < rlen {
                             return false;
                         }
                     }
@@ -551,7 +557,7 @@ impl Scheduler {
         return true;
     }
 
-    pub fn next_window(&self, blk_idx: &[usize; 2]) -> Option<Window> {
+    pub fn next_window(&mut self, blk_idx: &[usize; 2]) -> Option<Window> {
         let exec_tracker = self.block_tracker.exec_tracker(blk_idx);
         let mut window = exec_tracker.window.clone();
         let block = &exec_tracker.block;
@@ -567,7 +573,9 @@ impl Scheduler {
                 let new_anchor = [window.anchor[0] + window.shape[0], window.anchor[1]];
                 let new_shape = window.shape.clone();
                 let new_idxs = HashMap::new();
-                return Some(Window::new(new_anchor, new_shape, new_idxs));
+                let token = self.block_tracker.exec_tracker(blk_idx).window_token_counter;
+                self.block_tracker.exec_tracker_mut(blk_idx).window_token_counter += 1;
+                return Some(Window::new(new_anchor, new_shape, new_idxs, token));
             }
             // Move to new rows.
             else {
@@ -577,8 +585,39 @@ impl Scheduler {
         }
     }
 
-    pub fn ready_merge_block(&mut self) -> Option<Block> {
-        unimplemented!()
+    pub fn merge_task(&mut self) -> Option<(Block, Window)> {
+        let mut pairs = vec!();
+        let mut rows = vec!();
+        // If `lane_num / 2` pairs of psums are found, the a merge block is ready.
+        for (row, psum_addrs) in self.output_tracker.iter_mut() {
+            while psum_addrs.len() > 1 {
+                pairs.extend(psum_addrs.drain(..2));
+                rows.push(*row);
+            }
+        }
+
+        if rows.len() < self.lane_num / 2 {
+            return None;
+        } else {
+            let token = self.merge_block_token;
+            self.merge_block_token += 1;
+            let block = Block::new(
+                [usize::MAX, token],
+                [self.lane_num / 2, 2],
+                true);
+            let mut window = Window::new(
+                [usize::MAX, token],
+                [self.lane_num / 2, 2],
+                HashMap::new(),
+                0
+            );
+            for r_offset in 0..self.lane_num / 2 {
+                for c_offset in 0..2 {
+                    window.idxs.insert([c_offset, r_offset], [rows[r_offset], pairs[r_offset*2+c_offset]]);
+                }
+            }
+            return Some((block, window));
+        }
     }
 
     pub fn adjust_block(&mut self, cur_idx: [usize; 2]) {
@@ -741,6 +780,19 @@ impl Scheduler {
                     _ => panic!("Invalid merge scheme: {}", block_adjust_scheme),
                 }
             }
+        }
+    }
+
+    pub fn collect_pending_psums(&mut self, block_anchor: [usize; 2]) {
+        let exec_tracker = self.block_tracker.exec_tracker(&block_anchor);
+        let window_anchor = exec_tracker.window.anchor;
+        for i in 0..exec_tracker.window.shape[1] {
+            let row_idx = window_anchor[1] + i;
+            let psum_addr = exec_tracker.psum_row_addr_binding[&i];
+            self.output_tracker
+                .entry(row_idx)
+                .and_modify(|ps| ps.push(psum_addr))
+                .or_insert(vec!(psum_addr,));
         }
     }
 }

@@ -13,6 +13,8 @@ mod scheduler;
 mod storage;
 mod storage_traffic_model;
 mod util;
+mod new_scheduler;
+mod new_pqcache_omega_simulator;
 
 use std::cmp::min;
 
