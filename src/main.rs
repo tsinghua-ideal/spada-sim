@@ -13,8 +13,6 @@ mod scheduler;
 mod storage;
 mod storage_traffic_model;
 mod util;
-mod new_scheduler;
-mod new_pqcache_omega_simulator;
 
 use std::cmp::min;
 
@@ -338,7 +336,6 @@ fn main() {
                 omega_config.cache_size,
                 omega_config.word_byte,
                 output_base_addr,
-                default_reduction_window,
                 default_block_shape,
                 &mut dram_a,
                 &mut dram_b,

@@ -1,20 +1,15 @@
 use std::{
-    cmp::{max, min},
-    collections::{HashMap, VecDeque},
-    hash::Hash,
-    ops::Range,
+    cmp::{min},
+    collections::{VecDeque},
 };
 
-use itertools::{izip, merge, merge_join_by, Itertools, Merge, MergeJoinBy};
-use storage::{Element, LRUCache, LRURandomCache, PriorityCache, RandomCache, VectorStorage};
+use storage::{Element, PriorityCache,VectorStorage};
 
 use crate::frontend::Accelerator;
-use crate::new_scheduler::{Scheduler, Task};
+use crate::scheduler::{Scheduler, Task};
 use crate::trace_print;
-use crate::util::gen_rands_from_range;
 use crate::{
-    print_type_of,
-    storage::{self, CsrMatStorage, CsrRow, StorageAPI, sorted_element_vec_to_csr_row},
+    storage::{self, CsrMatStorage, sorted_element_vec_to_csr_row},
 };
 
 #[derive(Debug, Clone)]
@@ -71,6 +66,10 @@ impl Multiplier {
         self.a = None;
         self.b = None;
         self.c = None;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        return self.a.is_none() || self.b.is_none();
     }
 }
 
@@ -134,6 +133,10 @@ impl SortingNetwork {
         self.elements.clear();
         self.latency_counter.clear();
     }
+
+    pub fn is_empty(&self) -> bool {
+        return self.elements.len() == 0;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -190,13 +193,15 @@ impl MergeTree {
         self.elements.clear();
         self.latency_counter.clear();
     }
+
+    pub fn is_empty(&self) -> bool {
+        return self.elements.len() == 0;
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct PE {
-    pub block_anchor: [usize; 2],
-    pub window_anchor: [usize; 2],
-    pub window_shape: [usize; 2],
+    // HW components.
     pub stream_buffers: Vec<VecDeque<Element>>,
     pub multipliers: Vec<Multiplier>,
     pub psum_buffers: Vec<VecDeque<Element>>,
@@ -204,81 +209,78 @@ pub struct PE {
     pub merge_tree: MergeTree,
     pub stream_buffer_size: usize,
     pub psum_buffer_size: usize,
-
+    // Config.
     pub lane_num: usize,
-    pub stop_stream: bool,
     pub look_aside: bool,
     pub tail_flags: Vec<usize>,
-    pub window_token: usize,
-    pub merge_mode: bool,
+    pub task: Option<Task>,
 }
 
 impl PE {
-    pub fn new(sb_size: usize, pb_size: usize, lane_num: usize, pop_num_per_lane: usize) -> PE {
+    pub fn new(
+        sb_size: usize,
+        pb_size: usize,
+        lane_num: usize,
+        pop_num_per_lane: usize,
+        sn_latency: usize,
+        mt_latency: usize) -> PE {
         PE {
-            block_anchor: [usize::MAX; 2],
-            window_anchor: [usize::MAX; 2],
-            window_shape: [lane_num, 1],
             stream_buffers: vec![VecDeque::new(); lane_num],
             multipliers: vec![Multiplier::new(); lane_num],
             psum_buffers: vec![VecDeque::new(); lane_num],
-            sorting_network: SortingNetwork::new(lane_num, lane_num, pop_num_per_lane, 4),
-            merge_tree: MergeTree::new(lane_num),
+            sorting_network: SortingNetwork::new(
+                lane_num,
+                lane_num,
+                pop_num_per_lane,
+                sn_latency),
+            merge_tree: MergeTree::new(mt_latency),
             stream_buffer_size: sb_size,
             psum_buffer_size: pb_size,
             lane_num,
-            stop_stream: false,
             look_aside: true,
             tail_flags: vec![0; lane_num],
-            window_token: usize::MAX,
-            merge_mode: false,
+            task: None,
         }
     }
 
-    pub fn reset_pe(&mut self) {
-        self.block_anchor = [usize::MAX; 2];
-        self.window_anchor = [usize::MAX; 2];
-        self.window_shape = [1, self.lane_num];
-        for i in 0..self.lane_num {
-            self.stream_buffers[i].clear();
-            self.multipliers[i].reset();
-            self.psum_buffers[i].clear();
+    pub fn idle(&self) -> bool {
+        let is_idle = self.stream_buffers.iter().fold(true,
+                |p, fd| p&&fd.is_empty())
+            && self.multipliers.iter().fold(true,
+                |p, fd| p&&fd.is_empty())
+            && self.psum_buffers.iter().fold(true,
+                |p, pb| p&&pb.is_empty())
+            && self.sorting_network.is_empty()
+            && self.merge_tree.is_empty();
+        return is_idle;
+    }
+
+    pub fn update_tail_flags(&mut self) {
+        let group_size = self.task.as_ref().unwrap().group_size;
+        for s in (0..self.lane_num).step_by(group_size) {
+            let tail_flag = self.multipliers[s..s+self.task.as_ref().unwrap().group_size]
+                .iter()
+                .fold(usize::MAX, |tf, x| min(tf, x.b_idx()[1]));
+            self.tail_flags[s..s+self.task.as_ref().unwrap().group_size].fill(tail_flag);
         }
-        self.sorting_network.reset();
-        self.merge_tree.reset();
     }
 
-    /// Bind lane to a relative position of the window.
-    pub fn bind_lane(&mut self, lane_idx: usize) {
-        let r_offset = lane_idx / self.window_shape[0];
-        let c_offset = lane_idx % self.window_shape[0];
-    }
-
-    pub fn set_block(&mut self, block: &Block) {
-        self.block_anchor = block.anchor;
-    }
-
-    pub fn set_window(&mut self, window: &Window) {
-        self.window_anchor = window.anchor;
-        self.window_shape = window.shape;
-    }
-
-    pub fn unbind_win2lane(&mut self) {
-        self.wl_binding.clear();
-    }
-
-    pub fn push_stream_buffer(&mut self, values: Vec<Element>, lane_idx: usize) {
-        for value in values {
-            self.stream_buffers[lane_idx].push_back(value);
+    pub fn push_stream_buffer(&mut self, lane_idx: usize, elements: Vec<Element>) {
+        for e in elements {
+            self.stream_buffers[lane_idx].push_back(e);
         }
     }
 
     pub fn pop_stream_buffer(&mut self, lane_idx: usize) -> Option<Element> {
+        if self.task.is_none() {
+            return None;
+        }
+
+        let group_size = self.task.as_ref().unwrap().group_size;
         if lane_idx == 0 {
             self.stream_buffers[lane_idx].pop_front()
         } else if self.look_aside
-            && (lane_idx - 1) / self.window_shape[0] == lane_idx / self.window_shape[0]
-        {
+            && (lane_idx - 1) / group_size == lane_idx / group_size {
             let (ab_sb, sb) = self.stream_buffers.split_at_mut(lane_idx);
             let ab_sb = ab_sb.last_mut().unwrap();
             let sb = sb.get_mut(0).unwrap();
@@ -299,21 +301,12 @@ impl PE {
         }
     }
 
-    pub fn update_tail_flags(&mut self) {
-        for s in (0..self.lane_num).step_by(self.window_shape[0]) {
-            let tail_flag = self.multipliers[s..s+self.window_shape[0]]
-                .iter()
-                .fold(usize::MAX, |tf, x| min(tf, x.b_idx()[0]));
-            self.tail_flags[s..s + self.window_shape[0]].fill(tail_flag);
-        }
-    }
-
-    pub fn push_psum_buffer(&mut self, lane_idx: usize, prod: Element) {
-        self.psum_buffers[lane_idx].push_back(prod);
+    pub fn push_psum_buffer(&mut self, lane_idx: usize, element: Element) {
+        self.psum_buffers[lane_idx].push_back(element);
     }
 
     pub fn pop_psum_buffer(&mut self, lane_idx: usize, pop_num: usize) -> Vec<Option<Element>> {
-        let mut psums = vec![];
+        let mut psums= vec![];
         let pb = &mut self.psum_buffers[lane_idx];
         let tf = self.tail_flags[lane_idx];
         for _ in 0..pop_num {
@@ -325,10 +318,6 @@ impl PE {
 
         return psums;
     }
-
-    pub fn is_idle(&self) -> bool {
-        unimplemented!()
-    }
 }
 
 pub struct CycleAccurateSimulator<'a> {
@@ -336,7 +325,7 @@ pub struct CycleAccurateSimulator<'a> {
     lane_num: usize,
     fiber_cache: PriorityCache<'a>,
     pes: Vec<PE>,
-    a_mem: &'a mut CsrMatStorage,
+    a_matrix: &'a mut CsrMatStorage,
     exec_cycle: usize,
     scheduler: Scheduler,
 }
@@ -348,37 +337,41 @@ impl<'a> CycleAccurateSimulator<'a> {
         cache_size: usize,
         word_byte: usize,
         output_base_addr: usize,
-        default_reduction_window: [usize; 2],
         default_block_shape: [usize; 2],
-        a_mem: &'a mut CsrMatStorage,
-        b_mem: &'a mut CsrMatStorage,
-        psum_mem: &'a mut VectorStorage,
+        a_matrix: &'a mut CsrMatStorage,
+        b_matrix: &'a mut CsrMatStorage,
+        psum_matrix: &'a mut VectorStorage,
         accelerator: Accelerator,
     ) -> CycleAccurateSimulator<'a> {
         let var_factor = 1.5;
+        let sb_size = 4;
+        let pb_size = 8;
+        let pop_num_per_lane = 2;
+        let sn_latency = 4;
+        let mt_latency = 4;
         CycleAccurateSimulator {
             scheduler: Scheduler::new(
                 pe_num,
                 lane_num,
                 default_block_shape,
                 output_base_addr,
-                1.0 - b_mem.data.len() as f32 / (b_mem.row_num() * b_mem.mat_shape[0]) as f32,
-                &a_mem,
-                &b_mem,
+                1.0 - b_matrix.data.len() as f32 / (b_matrix.row_num() * b_matrix.mat_shape[0]) as f32,
+                a_matrix,
+                b_matrix,
                 var_factor,
                 accelerator,
             ),
-            pe_num: pe_num,
-            lane_num: lane_num,
+            pe_num,
+            lane_num,
             fiber_cache: PriorityCache::new(
                 cache_size,
                 word_byte,
                 output_base_addr,
-                b_mem,
-                psum_mem,
+                b_matrix,
+                psum_matrix,
             ),
-            pes: vec![PE::new(4, 8, lane_num, 2); pe_num],
-            a_mem: a_mem,
+            pes: vec![PE::new(4, 8, lane_num, 2, 4, 4); pe_num],
+            a_matrix,
             exec_cycle: 0,
         }
     }
@@ -390,40 +383,31 @@ impl<'a> CycleAccurateSimulator<'a> {
             trace_print!("---- cycle {}", self.exec_cycle);
             // Fetch data stage.
             for pe_idx in 0..self.pe_num {
-                if self
-                    .scheduler
-                    .is_window_finished(&self.pes[pe_idx].block_anchor)
-                && self.pes[pe_idx].is_idle()
-                {
-                    // When a window is finished, collect merge jobs.
-                    self.scheduler.collect_pending_psums(self.pes[pe_idx].block_anchor);
-                    if !self.scheduler.assign_jobs(&mut self.pes[pe_idx]) {
-                        continue;
-                    }
+                // When a window is finished, collect merge jobs.
+                if self.pes[pe_idx].task.is_some()
+                && self.scheduler.is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token) {
+                    self.scheduler.collect_pending_psums(self.pes[pe_idx].task.as_ref().unwrap().window_token);
                 }
 
+                // Assign new jobs if finished or init.
+                if (self.pes[pe_idx].task.is_none()
+                || self.scheduler.is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token))
+                && self.pes[pe_idx].idle() {
+                    self.pes[pe_idx].task = self.scheduler.assign_jobs(&mut self.pes[pe_idx], &mut self.a_matrix);
+                }
+
+                // Stream buffer fetch data.
                 for lane_idx in 0..self.lane_num {
-                    // Bind lane to an index in current window.
-                    // Fetch the corresponding scalar to the multiplier unit.
-                    if !self.pes[pe_idx].wl_binding.contains_key(&lane_idx) {
-                        self.pes[pe_idx].bind_lane(lane_idx);
-                        self.fetch_a_scalar(pe_idx, lane_idx);
-                    }
-
-                    // Update current stream buffer fetch data.
-                    let rb_num = self.pes[pe_idx].stream_buffer_size
-                        - self.pes[pe_idx].stream_buffers[lane_idx].len();
+                    let rb_num = self.pes[pe_idx].stream_buffer_size -
+                        self.pes[pe_idx].stream_buffers[lane_idx].len();
                     let bs = self.stream_b_row(pe_idx, lane_idx, rb_num);
-                    self.pes[pe_idx].push_stream_buffer(bs, lane_idx);
+                    self.pes[pe_idx].push_stream_buffer(lane_idx, bs);
                 }
-            }
 
-            // Production phase.
-            for pe_idx in 0..self.pe_num {
+                // Production phase.
                 for lane_idx in 0..self.lane_num {
                     // Pop from stream buffer.
                     let b = self.pes[pe_idx].pop_stream_buffer(lane_idx);
-
                     // Set b element to multiplier.
                     let prod = self.pes[pe_idx].multipliers[lane_idx].retrieve_c();
                     self.pes[pe_idx].multipliers[lane_idx].set_b(b);
@@ -433,13 +417,9 @@ impl<'a> CycleAccurateSimulator<'a> {
                         self.pes[pe_idx].push_psum_buffer(lane_idx, prod.unwrap());
                     }
                 }
-            }
 
-            // Collect psum phase.
-            for pe_idx in 0..self.pe_num {
-                // Update the tail flag.
-                self.pes[pe_idx].update_tail_flags();
                 // Collect psum phase.
+                self.pes[pe_idx].update_tail_flags();
                 let mut collected_psums = vec![];
                 for lane_idx in 0..self.lane_num {
                     let pop_num = self.pes[pe_idx].sorting_network.ele_per_lane;
@@ -454,81 +434,46 @@ impl<'a> CycleAccurateSimulator<'a> {
                 self.pes[pe_idx]
                     .sorting_network
                     .push_elements(collected_psums);
-            }
 
-            // Sort & merge phase.
-            for pe_idx in 0..self.pe_num {
+                // Sort & merge phase.
                 let sorted_elements = self.pes[pe_idx].sorting_network.pop_elements();
                 self.pes[pe_idx].merge_tree.push_elements(sorted_elements);
                 let merged_psums = self.pes[pe_idx].merge_tree.pop_elements();
-                // self.pes[pe_idx].write_psums(merged_psums);
                 self.write_psums(pe_idx, merged_psums);
             }
         }
     }
 
-    /// Fetch scalar from A matrix and write to the lane's multiplier.
-    pub fn fetch_a_scalar(&mut self, pe_no: usize, lane_no: usize) {
-        let pe = &self.pes[pe_no];
-        let rltv_pos = pe.wl_binding[&lane_no];
-        let exec_tracker = self.scheduler.block_tracker.exec_tracker_mut(&pe.block_anchor);
-        if pe.merge_mode {
-            let scalar_idx = exec_tracker
-                .window
-                .idxs[&rltv_pos];
-            let scalar = Element::new(scalar_idx, 1.0);
-            self.pes[pe_no].multipliers[lane_no].set_a(Some(scalar));
-        } else {
-            let mut scalar = self
-                .a_mem
-                .read_a_scalar(
-                    pe.window_anchor[0] + rltv_pos[0],
-                    pe.window_anchor[1] + rltv_pos[1],
-                )
-                .unwrap();
-            exec_tracker
-                .window
-                .idxs
-                .insert(rltv_pos, scalar.idx);
-            scalar.idx = [scalar.idx[0], exec_tracker.window.token];
-            self.pes[pe_no].multipliers[lane_no].set_a(Some(scalar));
+    pub fn stream_b_row(&mut self, pe_idx: usize, lane_idx: usize, rb_num: usize) -> Vec<Element> {
+        if self.pes[pe_idx].task.is_none() {
+            return vec!();
         }
-    }
+        let task = self.pes[pe_idx].task.as_ref().unwrap();
 
-    /// Stream b row to the lane's stream buffer.
-    pub fn stream_b_row(&mut self, pe_idx: usize, lane_idx: usize, num: usize) -> Vec<Element> {
-        // let b_row_idx = self.pes[pe_idx].multipliers[lane_idx].b_row_idx();
-        let exec_tracker = self.scheduler.block_tracker.exec_tracker_mut(&self.pes[pe_idx].block_anchor);
-        let binded_rltv_pos = self.pes[pe_idx].wl_binding[&lane_idx];
-        let a_idx = exec_tracker.window.idxs[&binded_rltv_pos];
-        let b_col_idx = self
-            .scheduler
-            .block_tracker
-            .exec_tracker_mut(&self.pes[pe_idx].block_anchor)
-            .b_cols_done
-            .entry(a_idx)
-            .or_insert(0);
+        let window_tracker = self.scheduler.window_tracker.get(&task.window_token).unwrap();
+        let scalar_idx = window_tracker.lane2idx[lane_idx];
+        if scalar_idx.is_none() {
+            return vec!();
+        }
 
-        let elements = self
-            .fiber_cache
-            .read_scalars(a_idx, *b_col_idx, num)
-            .unwrap();
-
-        *b_col_idx += num;
+        let scalar_idx = scalar_idx.unwrap();
+        let b_col_idx = window_tracker.b_cols_assigned[lane_idx];
+        let elements = self.fiber_cache.read_scalars(scalar_idx, b_col_idx, rb_num).unwrap();
 
         return elements;
     }
 
-    /// Write psums back to cache.
     pub fn write_psums(&mut self, pe_idx: usize, psums: Vec<Vec<Element>>) {
+        if self.pes[pe_idx].task.is_none() {
+            return;
+        }
+        let task = self.pes[pe_idx].task.as_ref().unwrap();
+
         for (gidx, ps) in psums.into_iter().enumerate() {
             let mut csrrow = sorted_element_vec_to_csr_row(ps);
-            let block_idx =  self.pes[pe_idx].block_anchor;
-            let rltv_pos = [0, gidx*self.pes[pe_idx].window_shape[1]];
-            let a_row_idx = self.scheduler.block_tracker.exec_tracker(&block_idx).window.idxs[&rltv_pos];
-            csrrow.rowptr = a_row_idx[1];
-            let addr = self.scheduler.block_tracker.exec_tracker(&block_idx).psum_row_addr_binding[&a_row_idx[1]];
-            // Update psum fiber size.
+            let addr = self.scheduler.window_tracker[&task.window_token].grp2psum_addr[gidx];
+            let a_row_idx = self.scheduler.window_tracker[&task.window_token].lane2idx[gidx*task.group_size].unwrap();
+            csrrow.rowptr = a_row_idx[0];
             self.scheduler.b_row_lens
                 .entry(addr)
                 .and_modify(|l| *l += csrrow.len())
