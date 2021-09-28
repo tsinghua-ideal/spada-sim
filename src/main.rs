@@ -1,4 +1,5 @@
 #![feature(drain_filter)]
+#![feature(hash_drain_filter)]
 
 mod b_reuse_counter;
 mod frontend;
@@ -316,18 +317,10 @@ fn main() {
             let output_base_addr = dram_b.indptr.len();
             // Determine the default window & block shape.
             let default_block_shape = match cli.accelerator {
-                Accelerator::Ip => [omega_config.lane_num, 1],
+                Accelerator::Ip => omega_config.block_shape,
                 Accelerator::Omega => [omega_config.block_shape[0], omega_config.block_shape[1]],
-                Accelerator::Op => [1, usize::MAX],
+                Accelerator::Op => [usize::MAX, 1],
                 Accelerator::NewOmega => [omega_config.block_shape[0], omega_config.block_shape[1]],
-            };
-
-            let default_reduction_window = match cli.accelerator {
-                Accelerator::Ip | Accelerator::Omega | Accelerator::NewOmega => [
-                    omega_config.lane_num / omega_config.block_shape[1],
-                    omega_config.block_shape[1],
-                ],
-                Accelerator::Op => [1, omega_config.lane_num],
             };
 
             let mut cycle_simu = CycleAccurateSimulator::new(
@@ -344,6 +337,29 @@ fn main() {
             );
 
             cycle_simu.execute();
+
+            let result = cycle_simu.get_exec_result();
+            let a_count = cycle_simu.get_a_mat_stat();
+            let b_count = cycle_simu.get_b_mat_stat();
+            let c_count = cycle_simu.get_c_mat_stat();
+            let exec_count = cycle_simu.get_exec_cycle();
+            let cache_count = cycle_simu.get_cache_stat();
+
+            println!("-----Result-----");
+            println!("-----Access count");
+            println!("Execution count: {}", exec_count);
+            println!("A matrix count: read {} write {}", a_count[0], a_count[1]);
+            println!("B matrix count: read {} write {}", b_count[0], b_count[1]);
+            println!("C matrix count: read {} write {}", c_count[0], c_count[1]);
+            println!(
+                "Cache count: read {} write {}",
+                cache_count[0], cache_count[1]
+            );
+
+            println!("-----Output product matrix");
+            for idx in 0..min(result.len(), 10) {
+                println!("{}", &result[idx]);
+            }
         }
     }
 }

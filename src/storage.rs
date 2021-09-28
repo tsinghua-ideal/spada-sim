@@ -1,5 +1,5 @@
 use crate::gemm::GEMM;
-use crate::trace_print;
+use crate::trace_println;
 use fmt::write;
 use itertools::{izip, Itertools};
 use priority_queue::PriorityQueue;
@@ -60,7 +60,7 @@ impl CsrRow {
         let mut result = vec![];
         for (d, col_idx) in izip!(self.data, self.indptr) {
             result.push(Element {
-                idx: [col_idx, self.rowptr],
+                idx: [self.rowptr, col_idx],
                 value: d,
             });
         }
@@ -140,9 +140,9 @@ struct PriorityCacheSnapshot {
 }
 
 pub fn sorted_element_vec_to_csr_row(srt_ele_vec: Vec<Element>) -> CsrRow {
-    let rowptr = srt_ele_vec[0].idx[1];
+    let rowptr = srt_ele_vec[0].idx[0];
     let data = srt_ele_vec.iter().map(|e| e.value).collect::<Vec<f64>>();
-    let indptr = srt_ele_vec.iter().map(|e| e.idx[0]).collect::<Vec<usize>>();
+    let indptr = srt_ele_vec.iter().map(|e| e.idx[1]).collect::<Vec<usize>>();
     return CsrRow {
         rowptr,
         data,
@@ -351,7 +351,7 @@ impl CsrMatStorage {
         let end_row_pos = self.indptr[row_idx + 1];
         let s = cur_row_pos + col_idx;
         if s < end_row_pos {
-            return Ok(Element::new([self.indices[s], row_idx], self.data[s]));
+            return Ok(Element::new([row_idx, self.indices[s]], self.data[s]));
         } else {
             return Err(StorageError::ReadEmptyRowError(format!(
                 "Invalid col_pos: {}",
@@ -361,6 +361,7 @@ impl CsrMatStorage {
     }
 
     pub fn read_scalars(&mut self, row_idx: usize, col_idx: usize, num: usize) -> Result<Vec<Element>, StorageError> {
+        trace_println!("***storage read_scalars: row_idx {} col_idx {} num {}", row_idx, col_idx, num);
         if row_idx >= self.indptr.len() {
             return Err(StorageError::ReadOverBoundError(format!(
                 "Invalid row_ptr: {}",
@@ -377,8 +378,8 @@ impl CsrMatStorage {
         let cur_row_pos = self.indptr[row_idx];
         let end_row_pos = self.indptr[row_idx + 1];
         let s = cur_row_pos + col_idx;
-        if s + num < end_row_pos {
-            let elements = (s..s+num)
+        if s < end_row_pos {
+            let elements = (s..min(s+num, end_row_pos))
                 .map(|idx|
                 Element::new([row_idx, self.indices[idx]], self.data[idx]))
                 .collect::<Vec<Element>>();
@@ -528,6 +529,31 @@ impl VectorStorage {
             None => Err(StorageError::ReadOverBoundError(format!(
                 "Invalid rowptr: {}",
                 row_ptr
+            ))),
+        }
+    }
+
+    pub fn consume_scalars(&mut self, row_idx: usize, col_idx: usize, num: usize) -> Result<Vec<Element>, StorageError> {
+        match self.data.get(&row_idx) {
+            Some(cr) => {
+                let elements = self.data
+                    .get(&row_idx)
+                    .unwrap()
+                    .clone()
+                    .as_element_vec();
+                let col_t = min(col_idx+num, elements.len());
+                let ele_size = (col_t - col_idx) * 2;
+                if self.track_count {
+                    self.read_count += ele_size;
+                }
+                if col_t == elements.len() {
+                    self.data.remove(&row_idx);
+                }
+                return Ok(elements[col_idx..col_t].to_vec());
+            },
+            None => return Err(StorageError::ReadOverBoundError(format!(
+                "Invalid rowptr: {}",
+                row_idx
             ))),
         }
     }
@@ -692,7 +718,7 @@ impl<'a> LRUCache<'a> {
             }
             if self.is_psum_row(popid) {
                 let popped_csrrow = self.rowmap_remove(&popid).unwrap();
-                trace_print!("*freerow {} and get {}", popid, popped_csrrow.size());
+                trace_println!("*freerow {} and get {}", popid, popped_csrrow.size());
                 self.cur_num -= popped_csrrow.size();
                 if self.track_count {
                     self.psum_evict_count += popped_csrrow.size();
@@ -701,7 +727,7 @@ impl<'a> LRUCache<'a> {
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
                 let evict_size = self.rowmap_remove(&popid).unwrap().size();
-                trace_print!("*freerow {} and get {}", popid, evict_size);
+                trace_println!("*freerow {} and get {}", popid, evict_size);
                 self.cur_num -= evict_size;
                 self.b_occp -= evict_size;
                 if self.track_count {
@@ -993,7 +1019,7 @@ impl<'a> RandomCache<'a> {
 
             let popped_csrrow = self.rowmap_remove(&popid).unwrap();
             let evict_size = popped_csrrow.size();
-            trace_print!("*freerow {} and get {}", popid, evict_size);
+            trace_println!("*freerow {} and get {}", popid, evict_size);
             self.cur_num -= evict_size;
 
             if self.is_psum_row(popid) {
@@ -1236,7 +1262,7 @@ impl<'a> LRURandomCache<'a> {
             }
             if self.is_psum_row(popid) {
                 let popped_csrrow = self.rowmap_remove(&popid).unwrap();
-                trace_print!("*freerow {} and get {}", popid, popped_csrrow.size());
+                trace_println!("*freerow {} and get {}", popid, popped_csrrow.size());
                 self.cur_num -= popped_csrrow.size();
                 if self.track_count {
                     self.psum_evict_count += popped_csrrow.size();
@@ -1245,7 +1271,7 @@ impl<'a> LRURandomCache<'a> {
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
                 let evict_size = self.rowmap_remove(&popid).unwrap().size();
-                trace_print!("*freerow {} and get {}", popid, evict_size);
+                trace_println!("*freerow {} and get {}", popid, evict_size);
                 self.cur_num -= evict_size;
                 self.b_occp -= evict_size;
                 if self.track_count {
@@ -1578,7 +1604,7 @@ impl<'a> PriorityCache<'a> {
 
     pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
         while self.priority_queue.len() > 0 && (self.cur_num + space_required > self.capability) {
-            trace_print!(
+            trace_println!(
                 "freeup_space: cur_num: {} space_required: {}",
                 self.cur_num,
                 space_required
@@ -1586,7 +1612,7 @@ impl<'a> PriorityCache<'a> {
             let mut popid: [usize; 2];
             loop {
                 popid = self.priority_queue_pop().unwrap();
-                trace_print!("freeup_space: popid: {:?}", popid);
+                trace_println!("freeup_space: popid: {:?}", popid);
                 if self.valid_pq_row_dict[&popid[1]] == popid[0]
                     && self.rowmap.contains_key(&popid[1])
                 {
@@ -1595,7 +1621,7 @@ impl<'a> PriorityCache<'a> {
             }
             if self.is_psum_row(popid[1]) {
                 let popped_csrrow = self.rowmap_remove(&popid[1]).unwrap();
-                trace_print!("*freerow {:?} and get {}", popid, popped_csrrow.size());
+                trace_println!("*freerow {:?} and get {}", popid, popped_csrrow.size());
                 self.cur_num -= popped_csrrow.size();
                 if self.track_count {
                     self.psum_evict_count += popped_csrrow.size();
@@ -1604,7 +1630,7 @@ impl<'a> PriorityCache<'a> {
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
                 let evict_size = self.rowmap_remove(&popid[1]).unwrap().size();
-                trace_print!("*freerow {:?} and get {}", popid, evict_size);
+                trace_println!("*freerow {:?} and get {}", popid, evict_size);
                 self.cur_num -= evict_size;
                 self.b_occp -= evict_size;
                 if self.track_count {
@@ -1736,6 +1762,7 @@ impl<'a> PriorityCache<'a> {
     pub fn swapout(&mut self, rowid: usize) {
         if self.rowmap.contains_key(&rowid) {
             let popped_csrrow = self.rowmap_remove(&rowid).unwrap();
+            trace_println!("***swapout {} with size {}", rowid, popped_csrrow.size());
             self.cur_num -= popped_csrrow.size();
             if self.is_psum_row(rowid) {
                 self.psum_occp -= popped_csrrow.size();
@@ -1743,6 +1770,8 @@ impl<'a> PriorityCache<'a> {
                 self.b_occp -= popped_csrrow.size();
             }
             self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
+        } else {
+            panic!("Swapout non-exist row: {}", rowid);
         }
     }
 
@@ -1750,44 +1779,110 @@ impl<'a> PriorityCache<'a> {
         return rowid >= self.output_base_addr;
     }
 
+    // pub fn legacy_read_scalars(
+    //     &mut self,
+    //     a_loc: [usize; 2],
+    //     col_s: usize,
+    //     num: usize,
+    // ) -> Option<Vec<Element>> {
+    //     match self.read_cache(a_loc.clone()) {
+    //         Some(csrrow) => {
+    //             let elements = csrrow.as_element_vec();
+    //             Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
+    //         }
+    //         None => {
+    //             if self.is_psum_row(a_loc[1]) {
+    //                 match self.psum_mem.read_row(a_loc[1]) {
+    //                     Ok(csrrow) => {
+    //                         if self.track_count {
+    //                             self.read_count += csrrow.size();
+    //                             self.miss_count += csrrow.size();
+    //                         }
+    //                         self.write(csrrow.clone(), a_loc);
+    //                         let elements = csrrow.as_element_vec();
+    //                         Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
+    //                     }
+    //                     Err(_) => None,
+    //                 }
+    //             } else {
+    //                 match self.b_mem.read_row(a_loc[1]) {
+    //                     Ok(csrrow) => {
+    //                         if self.track_count {
+    //                             self.read_count += csrrow.size();
+    //                             self.miss_count += csrrow.size();
+    //                         }
+    //                         self.write(csrrow.clone(), a_loc);
+    //                         let elements = csrrow.as_element_vec();
+    //                         Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
+    //                     }
+    //                     Err(_) => None,
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+
     pub fn read_scalars(
         &mut self,
         a_loc: [usize; 2],
         col_s: usize,
         num: usize,
     ) -> Option<Vec<Element>> {
-        match self.read_cache(a_loc.clone()) {
-            Some(csrrow) => {
-                let elements = csrrow.as_element_vec();
-                Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
+        if self.rowmap.contains_key(&a_loc[1]) {
+            // Track snapshot.
+            if let Some(ref mut snp) = self.snapshot {
+                if !snp.old_pq_row_track.contains_key(&a_loc[1]) {
+                    if self.valid_pq_row_dict.contains_key(&a_loc[1]) {
+                        snp.old_pq_row_track
+                            .insert(a_loc[1], LogItem::Update(self.valid_pq_row_dict[&a_loc[1]]));
+                    } else {
+                        snp.old_pq_row_track.insert(a_loc[1], LogItem::Insert);
+                    }
+                }
             }
-            None => {
-                if self.is_psum_row(a_loc[1]) {
-                    match self.psum_mem.read_row(a_loc[1]) {
-                        Ok(csrrow) => {
-                            if self.track_count {
-                                self.read_count += csrrow.size();
-                                self.miss_count += csrrow.size();
-                            }
-                            self.write(csrrow.clone(), a_loc);
-                            let elements = csrrow.as_element_vec();
-                            Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
+            // Only update when col_s is 0.
+            if col_s == 0 {
+                self.valid_pq_row_dict
+                    .entry(a_loc[1])
+                    .and_modify(|x| *x = max(*x, a_loc[0]))
+                    .or_insert(a_loc[0]);
+                self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
+            }
+            let elements = self.rowmap
+                .get(&a_loc[1])
+                .unwrap()
+                .clone()
+                .as_element_vec();
+            let col_t = min(col_s+num, elements.len());
+            let ele_size = (col_t - col_s) * 2;
+            if self.track_count {
+                self.read_count += ele_size;
+            }
+            return Some(elements[col_s..col_t].to_vec());
+        } else {
+            if self.is_psum_row(a_loc[1]) {
+                match self.psum_mem.read_row(a_loc[1]) {
+                    Ok(csrrow) => {
+                        if self.track_count {
+                            self.miss_count += csrrow.size();
                         }
-                        Err(_) => None,
+                        self.write(csrrow.clone(), a_loc);
+                        let elements = csrrow.as_element_vec();
+                        return Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
                     }
-                } else {
-                    match self.b_mem.read_row(a_loc[1]) {
-                        Ok(csrrow) => {
-                            if self.track_count {
-                                self.read_count += csrrow.size();
-                                self.miss_count += csrrow.size();
-                            }
-                            self.write(csrrow.clone(), a_loc);
-                            let elements = csrrow.as_element_vec();
-                            Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
+                    Err(_) => return None,
+                }
+            } else {
+                match self.b_mem.read_row(a_loc[1]) {
+                    Ok(csrrow) => {
+                        if self.track_count {
+                            self.miss_count += csrrow.size();
                         }
-                        Err(_) => None,
+                        self.write(csrrow.clone(), a_loc);
+                        let elements = csrrow.as_element_vec();
+                        return Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
                     }
+                    Err(_) => return None,
                 }
             }
         }
@@ -1795,7 +1890,7 @@ impl<'a> PriorityCache<'a> {
 
     pub fn append_psum_to(&mut self, addr: usize, csrrow: CsrRow) {
         let row_size = csrrow.size();
-        if self.is_psum_row(csrrow.rowptr) {
+        if self.is_psum_row(addr) {
             self.psum_occp += row_size;
         } else {
             self.b_occp += row_size;
@@ -1840,6 +1935,66 @@ impl<'a> PriorityCache<'a> {
 
         if self.track_count {
             self.write_count += row_size;
+        }
+    }
+
+    pub fn consume_scalars(
+        &mut self,
+        a_loc: [usize; 2],
+        col_s: usize,
+        num: usize
+    ) -> Option<Vec<Element>> {
+        if self.rowmap.contains_key(&a_loc[1]) {
+            // Convert the csrrow to element vector.
+            let elements = self.rowmap
+                .get(&a_loc[1])
+                .unwrap()
+                .clone()
+                .as_element_vec();
+            // Track the tail of the readout.
+            let col_t = min(col_s+num, elements.len());
+            let ele_size = (col_t - col_s) * 2;
+            let eles = elements[col_s..col_t].to_vec();
+            // Update the counter.
+            if self.track_count {
+                self.read_count += ele_size;
+            }
+            // Update the occupation.
+            self.cur_num -= ele_size;
+            if self.is_psum_row(a_loc[1]) {
+                self.psum_occp -= ele_size;
+            } else {
+                self.b_occp -= ele_size;
+            }
+            // Release the consumed row after traversing it.
+            if col_t == elements.len() {
+                self.rowmap_remove(&a_loc[1]).unwrap();
+            }
+            return Some(eles);
+        } else {
+            if self.is_psum_row(a_loc[1]) {
+                match self.psum_mem.consume_scalars(a_loc[1], col_s, num) {
+                    Ok(eles) => {
+                        if self.track_count {
+                            self.read_count += eles.len() * 2;
+                            self.miss_count += eles.len() * 2;
+                        }
+                        Some(eles)
+                    }
+                    Err(_) => Some(vec!()),
+                }
+            } else {
+                match self.b_mem.read_scalars(a_loc[1], col_s, num) {
+                    Ok(eles) => {
+                        if self.track_count {
+                            self.read_count += eles.len() * 2;
+                            self.miss_count += eles.len() * 2;
+                        }
+                        Some(eles)
+                    }
+                    Err(_) => Some(vec!()),
+                }
+            }
         }
     }
 }

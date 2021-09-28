@@ -4,7 +4,7 @@ use priority_queue::PriorityQueue;
 use sprs::vec;
 
 use crate::storage::CsrMatStorage;
-use crate::trace_print;
+use crate::trace_println;
 
 pub type RowMap = HashMap<usize, usize>;
 
@@ -74,7 +74,7 @@ fn find_contain_rows(amat: &CsrMatStorage, colid: usize) -> Vec<usize> {
 }
 
 pub fn sort_by_length(amat: &mut CsrMatStorage) -> HashMap<usize, usize> {
-    trace_print!("---Sort A rows by length---");
+    trace_println!("---Sort A rows by length---");
     let mut id_len_vector = vec![];
     for idx in 0..amat.row_num() {
         id_len_vector.push([idx, amat.rowptr(idx + 1) - amat.rowptr(idx)]);

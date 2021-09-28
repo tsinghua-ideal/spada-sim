@@ -9,7 +9,7 @@ use itertools::{izip, merge, merge_join_by, Itertools, Merge, MergeJoinBy};
 use storage::{LRUCache, LRURandomCache, PriorityCache, RandomCache, VectorStorage};
 
 use crate::frontend::Accelerator;
-use crate::trace_print;
+use crate::trace_println;
 use crate::util::gen_rands_from_range;
 use crate::{
     print_type_of,
@@ -306,20 +306,20 @@ impl<'a> TrafficModel<'a> {
         let a_group = parse_group(&a_mem, var_factor);
         let b_group = parse_group(&b_mem, var_factor);
 
-        trace_print!("-- a_group:");
+        trace_println!("-- a_group:");
         let a_rg = a_group
             .groups
             .iter()
             .map(|gi| gi.row_range)
             .collect::<Vec<[usize; 2]>>();
-        trace_print!("{:?}", &a_rg);
-        trace_print!("-- b_group:");
+        trace_println!("{:?}", &a_rg);
+        trace_println!("-- b_group:");
         let b_rg = b_group
             .groups
             .iter()
             .map(|gi| gi.row_range)
             .collect::<Vec<[usize; 2]>>();
-        trace_print!("{:?}", &b_rg);
+        trace_println!("{:?}", &b_rg);
 
         // Init from the inner-product dataflow.
         // Can be changed to be adaptive.
@@ -374,8 +374,8 @@ impl<'a> TrafficModel<'a> {
         // Reset the execution round counter.
         self.exec_round = 0;
         loop {
-            trace_print!("----");
-            trace_print!(
+            trace_println!("----");
+            trace_println!(
                 "merge counter: {}, merge period: {}",
                 self.merge_counter,
                 self.merge_period
@@ -409,7 +409,7 @@ impl<'a> TrafficModel<'a> {
                 }
                 // Fetch data from memory & cache.
                 let (rowidxs, scaling_factors, fibers) = self.fetch_window_data(i);
-                trace_print!(
+                trace_println!(
                     "PE: {} scaling factors: {:?}",
                     i,
                     scaling_factors
@@ -420,7 +420,7 @@ impl<'a> TrafficModel<'a> {
 
                 // Compute the window.
                 let output_fibers = self.compute_a_window(&rowidxs, &scaling_factors, fibers);
-                trace_print!(
+                trace_println!(
                     "Compute: rows: {:?} cols: {}-{} merge_mode: {} output fiber size: {:?}",
                     &rowidxs,
                     self.pes[i].col_s,
@@ -432,7 +432,7 @@ impl<'a> TrafficModel<'a> {
                         .collect::<Vec<usize>>()
                 );
                 if !self.pes[i].merge_mode {
-                    trace_print!(
+                    trace_println!(
                         "Reuse: touched fiber size: {} deduped fiber size: {}, output size: {}",
                         self.exec_trackers[&self.pes[i].cur_block.get_idx()].touched_fiber_size,
                         self.exec_trackers[&self.pes[i].cur_block.get_idx()].dedup_fiber_size,
@@ -460,7 +460,7 @@ impl<'a> TrafficModel<'a> {
                     // Finish one traverse over current rows.
                     // Add the finished rows into merge queue and turn into merge mode.
                     for (row_pos, row) in rowidxs.iter().enumerate() {
-                        trace_print!("row: {}", row);
+                        trace_println!("row: {}", row);
 
                         // // Merge scheme 1:
                         // if output_fibers[row_pos].is_some()
@@ -547,35 +547,35 @@ impl<'a> TrafficModel<'a> {
                 tracker.psum_rw_size[1] += delta_cache;
             }
 
-            trace_print!(
+            trace_println!(
                 "Cache read_count: + {} -> {}, write_count: + {} -> {}",
                 self.fiber_cache.read_count - prev_cache_read_count,
                 self.fiber_cache.read_count,
                 self.fiber_cache.write_count - prev_cache_write_count,
                 self.fiber_cache.write_count
             );
-            trace_print!(
+            trace_println!(
                 "Cache occp: {} in {}, psum_occp: {}, b_occp: {}",
                 self.fiber_cache.cur_num,
                 self.fiber_cache.capability,
                 self.fiber_cache.psum_occp,
                 self.fiber_cache.b_occp
             );
-            trace_print!("Cache miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}",
+            trace_println!("Cache miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}",
                 self.fiber_cache.miss_count - prev_miss_count, self.fiber_cache.miss_count,
                 self.fiber_cache.b_evict_count - prev_b_evict_count, self.fiber_cache.b_evict_count,
                 self.fiber_cache.psum_evict_count - prev_psum_evict_count, self.fiber_cache.psum_evict_count);
-            trace_print!(
+            trace_println!(
                 "A mem: read_count: + {} -> {}",
                 self.a_mem.read_count - prev_a_mem_read_count,
                 self.a_mem.read_count
             );
-            trace_print!(
+            trace_println!(
                 "B mem: read_count: + {} -> {}",
                 self.fiber_cache.b_mem.read_count - prev_b_mem_read_count,
                 self.fiber_cache.b_mem.read_count
             );
-            trace_print!(
+            trace_println!(
                 "C mem: read_count: + {} -> {}, write_count: +{} -> {}",
                 self.fiber_cache.psum_mem.read_count - prev_psum_mem_read_count,
                 self.fiber_cache.psum_mem.read_count,
@@ -586,7 +586,7 @@ impl<'a> TrafficModel<'a> {
     }
 
     fn assign_jobs(&mut self) -> bool {
-        trace_print!("Merge queue: {:?}", &self.merge_queue);
+        trace_println!("Merge queue: {:?}", &self.merge_queue);
 
         // Dedup merge queue & writeback merged fiber.
         let mut i = 0;
@@ -601,7 +601,7 @@ impl<'a> TrafficModel<'a> {
                     && self.merge_trackers[&rowid].blocks.len() == 0
                 {
                     if self.fiber_cache.rowmap.contains_key(&psum_addrs[0]) {
-                        trace_print!(
+                        trace_println!(
                             "Assign jobs: swapout addr {} of {} with size {}",
                             psum_addrs[0],
                             self.merge_queue[i],
@@ -617,7 +617,7 @@ impl<'a> TrafficModel<'a> {
             }
         }
 
-        trace_print!("Assign jobs: merge queue: {:?}", &self.merge_queue);
+        trace_println!("Assign jobs: merge queue: {:?}", &self.merge_queue);
 
         // No job to assign if no multiplication and merge workloads.
         if self.a_traversed && self.pes.iter().all(|x| x.cur_block.height == 0) && psums_num == 0 {
@@ -632,19 +632,19 @@ impl<'a> TrafficModel<'a> {
             // Allocate PEs to merge the unmerged psums in prior.
             let pe_no = (offset + self.merge_pe) % self.pe_num;
             if alloc_merge_pe > 0 {
-                trace_print!("PE {} turn into merge mode.", pe_no);
+                trace_println!("PE {} turn into merge mode.", pe_no);
                 self.pes[pe_no].merge_mode = true;
                 alloc_merge_pe -= 1;
             } else {
-                trace_print!("PE {}", pe_no);
-                trace_print!(
+                trace_println!("PE {}", pe_no);
+                trace_println!(
                     "Current reduction window: {:?}",
                     self.pes[pe_no].reduction_window
                 );
                 self.pes[pe_no].merge_mode = false;
                 // Try to shift the window in the block. Otherwise assign new block to PE.
                 if !self.slide_window(pe_no) {
-                    trace_print!("Failed to shift window.");
+                    trace_println!("Failed to shift window.");
                     // Either empty or finished.
                     // Add block exec log to group.
                     if self.pes[pe_no].cur_block.height != 0 {
@@ -670,13 +670,13 @@ impl<'a> TrafficModel<'a> {
                     // Try to assign a new block.
                     match self.get_next_block() {
                         Some(block) => {
-                            trace_print!("Assign block {:?} to {}", block.get_idx(), pe_no);
+                            trace_println!("Assign block {:?} to {}", block.get_idx(), pe_no);
                             println!("row_s: {} block_shape: {:?}", self.row_s, self.block_shape);
                             let reduction_window =
                                 self.adjust_window(block.get_idx(), block.get_shape());
                             self.pes[pe_no].assign_block(block);
                             self.pes[pe_no].reduction_window = reduction_window;
-                            trace_print!(
+                            trace_println!(
                                 "Adjust reduction window: {:?}",
                                 self.pes[pe_no].reduction_window
                             );
@@ -862,7 +862,7 @@ impl<'a> TrafficModel<'a> {
             }
         }
 
-        trace_print!(
+        trace_println!(
             "PE {} shift to row_s {} col_s {}, block: row_s {} col_s {} height {} width {}",
             pe_no,
             self.pes[pe_no].row_s,
@@ -1003,7 +1003,7 @@ impl<'a> TrafficModel<'a> {
                             * 100
                             + self.exec_trackers[&n2_block].psum_rw_size[1];
 
-                        trace_print!(
+                        trace_println!(
                             "n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
                             n1_cost,
                             n1_ele_size,
@@ -1075,7 +1075,7 @@ impl<'a> TrafficModel<'a> {
 
                         max_cachable_row = max(1, max_cachable_row);
 
-                        trace_print!(
+                        trace_println!(
                             "n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}, exp_psum_size: {}, max_cachable_row: {}",
                             n1_cost, n1_ele_size, n2_cost, n2_ele_size, exp_psum_size, max_cachable_row
                         );
@@ -1175,7 +1175,7 @@ impl<'a> TrafficModel<'a> {
                                 });
                             let merged_psum_row = (1.0 - product_sparsity) * b_width as f32;
                             exp_psum_size += merged_psum_row * 2.0;
-                            trace_print!(
+                            trace_println!(
                                 "brow_s {} brow_t {} merged_psum_row {}",
                                 brow_s,
                                 brow_t,
@@ -1190,7 +1190,7 @@ impl<'a> TrafficModel<'a> {
 
                         max_cachable_row = max(1, max_cachable_row);
 
-                        trace_print!(
+                        trace_println!(
                             "cost num: {:?}, min_row_num: {}, exp_psum_size: {}, max_cachable_row: {}",
                             self.a_group.groups[self.row_group].cost_num,
                             min_row_num,
@@ -1277,7 +1277,7 @@ impl<'a> TrafficModel<'a> {
 
                         max_cachable_row = max(1, max_cachable_row);
 
-                        trace_print!(
+                        trace_println!(
                             "n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}, exp_psum_size: {}, max_cachable_row: {}",
                             n1_cost, n1_ele_size, n2_cost, n2_ele_size, exp_psum_size, max_cachable_row
                         );
@@ -1325,7 +1325,7 @@ impl<'a> TrafficModel<'a> {
                         let mut min_cost = f32::MAX;
                         let mut cur_row_num = 1;
 
-                        trace_print!(
+                        trace_println!(
                             "cost num: {:?}",
                             self.a_group.groups[self.row_group].cost_num
                         );
@@ -1360,7 +1360,7 @@ impl<'a> TrafficModel<'a> {
                         self.block_shape[1] = min_row_num;
                     }
                     8 => {
-                        trace_print!("-Adjust block");
+                        trace_println!("-Adjust block");
                         // Separately treat wide groups and narrow groups.
                         let group_diviser = 128;
                         let sample_num = 4;
@@ -1425,7 +1425,7 @@ impl<'a> TrafficModel<'a> {
                                 min_row_num = self.set_row_num;
                             } else {
                                 // Sampling.
-                                trace_print!("---Sampling");
+                                trace_println!("---Sampling");
                                 min_row_num =
                                     match self.sampling_bounds.binary_search(&(self.row_s)) {
                                         Ok(idx) => 2usize.pow(idx as u32 + 1),
@@ -1438,7 +1438,7 @@ impl<'a> TrafficModel<'a> {
                             {
                                 min_row_num /= 2;
                             }
-                            trace_print!(
+                            trace_println!(
                                 "group_range {:?} cost num: {:?}",
                                 &self.a_group.groups[self.row_group].row_range,
                                 self.a_group.groups[self.row_group].cost_num
@@ -1473,7 +1473,7 @@ impl<'a> TrafficModel<'a> {
                                 * 100
                                 + self.exec_trackers[&n2_block].psum_rw_size[1];
 
-                            trace_print!(
+                            trace_println!(
                                 "group_range {:?} n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
                                 &self.a_group.groups[self.row_group].row_range, n1_cost, n1_ele_size, n2_cost, n2_ele_size
                             );
@@ -1706,7 +1706,7 @@ impl<'a> TrafficModel<'a> {
                 .entry(rowidx)
                 .or_default()
                 .push(self.output_base_addr);
-            trace_print!("write_psum: {:?}", self.output_trackers[&rowidx]);
+            trace_println!("write_psum: {:?}", self.output_trackers[&rowidx]);
             let mut output_fiber = output_fiber.unwrap();
             output_fiber.rowptr = self.output_base_addr;
             self.fiber_cache
@@ -1728,7 +1728,7 @@ impl<'a> TrafficModel<'a> {
                 };
                 // let raw_rowid = self.a_mem.row_remap[&rowid];
                 let addrs = self.output_trackers.get(&rowid).unwrap();
-                trace_print!(
+                trace_println!(
                     "Get result: row: {} row len: {}",
                     raw_rowid,
                     self.fiber_cache.psum_mem.data[&addrs[0]].size() / 2

@@ -7,8 +7,14 @@ fn get_type_name<T>(_: &T) -> String {
 
 #[cfg(feature = "trace_exec")]
 #[macro_export]
-macro_rules! trace_print {
+macro_rules! trace_println {
     ($( $args:expr ),*) => { println!( $( $args ),* ); }
+}
+
+#[cfg(feature = "trace_exec")]
+#[macro_export]
+macro_rules! trace_print {
+    ($( $args:expr ),*) => { print!( $( $args ),* ); }
 }
 
 // Non-debug version
