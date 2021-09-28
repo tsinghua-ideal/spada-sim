@@ -81,7 +81,12 @@ impl CsrRow {
     }
 
     pub fn append(&mut self, csrrow: CsrRow) {
-        assert!(self.rowptr == csrrow.rowptr, "Not the same row ({}, {}), cannot be combined!", self.rowptr, csrrow.rowptr);
+        assert!(
+            self.rowptr == csrrow.rowptr,
+            "Not the same row ({}, {}), cannot be combined!",
+            self.rowptr,
+            csrrow.rowptr
+        );
         self.data.extend(csrrow.data.iter());
         self.indptr.extend(&mut csrrow.indptr.iter());
     }
@@ -360,8 +365,18 @@ impl CsrMatStorage {
         }
     }
 
-    pub fn read_scalars(&mut self, row_idx: usize, col_idx: usize, num: usize) -> Result<Vec<Element>, StorageError> {
-        trace_println!("***storage read_scalars: row_idx {} col_idx {} num {}", row_idx, col_idx, num);
+    pub fn read_scalars(
+        &mut self,
+        row_idx: usize,
+        col_idx: usize,
+        num: usize,
+    ) -> Result<Vec<Element>, StorageError> {
+        trace_println!(
+            "***storage read_scalars: row_idx {} col_idx {} num {}",
+            row_idx,
+            col_idx,
+            num
+        );
         if row_idx >= self.indptr.len() {
             return Err(StorageError::ReadOverBoundError(format!(
                 "Invalid row_ptr: {}",
@@ -379,9 +394,8 @@ impl CsrMatStorage {
         let end_row_pos = self.indptr[row_idx + 1];
         let s = cur_row_pos + col_idx;
         if s < end_row_pos {
-            let elements = (s..min(s+num, end_row_pos))
-                .map(|idx|
-                Element::new([row_idx, self.indices[idx]], self.data[idx]))
+            let elements = (s..min(s + num, end_row_pos))
+                .map(|idx| Element::new([row_idx, self.indices[idx]], self.data[idx]))
                 .collect::<Vec<Element>>();
             if self.track_count {
                 self.read_count += elements.len() * 2;
@@ -450,7 +464,7 @@ impl StorageAPI for VectorStorage {
             // If already exists, append to the previous, otherwise insert it.
             self.data
                 .entry(indptr)
-                .and_modify(|p|p.append(row.to_owned()))
+                .and_modify(|p| p.append(row.to_owned()))
                 .or_insert(row.to_owned());
             if self.track_count {
                 self.write_count += row.size();
@@ -533,15 +547,16 @@ impl VectorStorage {
         }
     }
 
-    pub fn consume_scalars(&mut self, row_idx: usize, col_idx: usize, num: usize) -> Result<Vec<Element>, StorageError> {
+    pub fn consume_scalars(
+        &mut self,
+        row_idx: usize,
+        col_idx: usize,
+        num: usize,
+    ) -> Result<Vec<Element>, StorageError> {
         match self.data.get(&row_idx) {
             Some(cr) => {
-                let elements = self.data
-                    .get(&row_idx)
-                    .unwrap()
-                    .clone()
-                    .as_element_vec();
-                let col_t = min(col_idx+num, elements.len());
+                let elements = self.data.get(&row_idx).unwrap().clone().as_element_vec();
+                let col_t = min(col_idx + num, elements.len());
                 let ele_size = (col_t - col_idx) * 2;
                 if self.track_count {
                     self.read_count += ele_size;
@@ -550,11 +565,13 @@ impl VectorStorage {
                     self.data.remove(&row_idx);
                 }
                 return Ok(elements[col_idx..col_t].to_vec());
-            },
-            None => return Err(StorageError::ReadOverBoundError(format!(
-                "Invalid rowptr: {}",
-                row_idx
-            ))),
+            }
+            None => {
+                return Err(StorageError::ReadOverBoundError(format!(
+                    "Invalid rowptr: {}",
+                    row_idx
+                )))
+            }
         }
     }
 }
@@ -1848,12 +1865,8 @@ impl<'a> PriorityCache<'a> {
                     .or_insert(a_loc[0]);
                 self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
             }
-            let elements = self.rowmap
-                .get(&a_loc[1])
-                .unwrap()
-                .clone()
-                .as_element_vec();
-            let col_t = min(col_s+num, elements.len());
+            let elements = self.rowmap.get(&a_loc[1]).unwrap().clone().as_element_vec();
+            let col_t = min(col_s + num, elements.len());
             let ele_size = (col_t - col_s) * 2;
             if self.track_count {
                 self.read_count += ele_size;
@@ -1868,7 +1881,7 @@ impl<'a> PriorityCache<'a> {
                         }
                         self.write(csrrow.clone(), a_loc);
                         let elements = csrrow.as_element_vec();
-                        return Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
+                        return Some(elements[col_s..min(col_s + num, elements.len())].to_vec());
                     }
                     Err(_) => return None,
                 }
@@ -1880,7 +1893,7 @@ impl<'a> PriorityCache<'a> {
                         }
                         self.write(csrrow.clone(), a_loc);
                         let elements = csrrow.as_element_vec();
-                        return Some(elements[col_s..min(col_s + num, elements.len())].to_vec())
+                        return Some(elements[col_s..min(col_s + num, elements.len())].to_vec());
                     }
                     Err(_) => return None,
                 }
@@ -1942,17 +1955,13 @@ impl<'a> PriorityCache<'a> {
         &mut self,
         a_loc: [usize; 2],
         col_s: usize,
-        num: usize
+        num: usize,
     ) -> Option<Vec<Element>> {
         if self.rowmap.contains_key(&a_loc[1]) {
             // Convert the csrrow to element vector.
-            let elements = self.rowmap
-                .get(&a_loc[1])
-                .unwrap()
-                .clone()
-                .as_element_vec();
+            let elements = self.rowmap.get(&a_loc[1]).unwrap().clone().as_element_vec();
             // Track the tail of the readout.
-            let col_t = min(col_s+num, elements.len());
+            let col_t = min(col_s + num, elements.len());
             let ele_size = (col_t - col_s) * 2;
             let eles = elements[col_s..col_t].to_vec();
             // Update the counter.
@@ -1981,7 +1990,7 @@ impl<'a> PriorityCache<'a> {
                         }
                         Some(eles)
                     }
-                    Err(_) => Some(vec!()),
+                    Err(_) => Some(vec![]),
                 }
             } else {
                 match self.b_mem.read_scalars(a_loc[1], col_s, num) {
@@ -1992,7 +2001,7 @@ impl<'a> PriorityCache<'a> {
                         }
                         Some(eles)
                     }
-                    Err(_) => Some(vec!()),
+                    Err(_) => Some(vec![]),
                 }
             }
         }

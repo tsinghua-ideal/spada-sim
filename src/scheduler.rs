@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::frontend::Accelerator;
 use crate::pqcache_omega_simulator::PE;
-use crate::storage::{Element, CsrMatStorage};
-use crate::{trace_println, trace_print};
+use crate::storage::{CsrMatStorage, Element};
+use crate::{trace_print, trace_println};
 
 #[derive(Debug, Clone)]
 pub struct Task {
@@ -39,11 +39,11 @@ pub struct Token {
 
 impl Token {
     pub fn new() -> Token {
-        Token{token: 0}
+        Token { token: 0 }
     }
 
     pub fn new_from(v: usize) -> Token {
-        Token{token: v}
+        Token { token: v }
     }
 
     pub fn tik(&mut self) -> usize {
@@ -207,7 +207,14 @@ pub struct BlockTracker {
 }
 
 impl BlockTracker {
-    pub fn new(token: usize, anchor: [usize; 2], shape: [usize; 2], is_merge_block: bool, a_cols_num: Vec<usize>, is_tail: Vec<bool>) -> BlockTracker {
+    pub fn new(
+        token: usize,
+        anchor: [usize; 2],
+        shape: [usize; 2],
+        is_merge_block: bool,
+        a_cols_num: Vec<usize>,
+        is_tail: Vec<bool>,
+    ) -> BlockTracker {
         BlockTracker {
             token,
             anchor,
@@ -233,12 +240,18 @@ pub struct WindowTracker {
     pub b_cols_assigned: Vec<usize>,
     // PE execution related.
     pub lane2idx: Vec<Option<[usize; 2]>>, // [lane] -> actual a index.
-    pub arow_addr_pairs: Vec<[usize; 2]>, // [group] -> writeback psum addr.
+    pub arow_addr_pairs: Vec<[usize; 2]>,  // [group] -> writeback psum addr.
 }
 
 impl WindowTracker {
-    pub fn new(token: usize, anchor: [usize; 2], block_token: usize, shape: [usize; 2],
-        lane2idx: Vec<Option<[usize; 2]>>, arow_addr_pairs: Vec<[usize; 2]>) -> WindowTracker {
+    pub fn new(
+        token: usize,
+        anchor: [usize; 2],
+        block_token: usize,
+        shape: [usize; 2],
+        lane2idx: Vec<Option<[usize; 2]>>,
+        arow_addr_pairs: Vec<[usize; 2]>,
+    ) -> WindowTracker {
         WindowTracker {
             token,
             anchor,
@@ -273,7 +286,7 @@ pub struct Scheduler {
     // Assign job related.
     pub block_tracker: HashMap<usize, BlockTracker>, // block_anchor -> BlockTracker
     pub window_tracker: HashMap<usize, WindowTracker>, // window_token -> WindowTracker
-    pub output_tracker: HashMap<usize, Vec<usize>>, // row idx -> psums
+    pub output_tracker: HashMap<usize, Vec<usize>>,  // row idx -> psums
     block_topo_tracker: BlockTopoTracker,
     output_addr_token: Token,
     window_token: Token,
@@ -312,7 +325,7 @@ impl Scheduler {
             a_group: parse_group(a_matrix, var_factor),
             b_group: parse_group(b_matrix, var_factor),
             row_group: usize::MAX,
-            sampling_bounds: vec!(),
+            sampling_bounds: vec![],
             set_row_num: usize::MAX,
             block_tracker: HashMap::new(),
             window_tracker: HashMap::new(),
@@ -327,10 +340,6 @@ impl Scheduler {
 
     pub fn assign_jobs(&mut self, pe: &mut PE, a_matrix: &mut CsrMatStorage) -> Option<Task> {
         if pe.task.is_none() || self.is_block_finished(pe.task.as_ref().unwrap().block_token) {
-            // // Label finished rows.
-            // if pe.task.is_some() {
-            //     self.label_finished_rows(pe.task.as_ref().unwrap().block_token);
-            // }
             // If any merge block is ready, assign the merge block.
             if let Some(task) = self.merge_task() {
                 return Some(task);
@@ -365,11 +374,16 @@ impl Scheduler {
 
     pub fn is_block_finished(&mut self, block_token: usize) -> bool {
         let block_tracker = self.block_tracker.get(&block_token).unwrap();
-        trace_println!("block_tracker: {:?}, {:?}", &block_tracker.a_cols_assigned, &block_tracker.a_cols_num);
+        trace_println!(
+            "block_tracker: {:?}, {:?}",
+            &block_tracker.a_cols_assigned,
+            &block_tracker.a_cols_num
+        );
         for (c, l) in block_tracker
             .a_cols_assigned
             .iter()
-            .zip(block_tracker.a_cols_num.iter()) {
+            .zip(block_tracker.a_cols_num.iter())
+        {
             if *c < *l {
                 return false;
             }
@@ -382,7 +396,8 @@ impl Scheduler {
         if !block_tracker.is_merge_block {
             for (offset, is_tail) in block_tracker.is_tail.iter().enumerate() {
                 if *is_tail {
-                    self.finished_a_rows.insert(offset+block_tracker.anchor[0]);
+                    self.finished_a_rows
+                        .insert(offset + block_tracker.anchor[0]);
                 }
             }
         }
@@ -403,7 +418,7 @@ impl Scheduler {
                     .map(|offset| {
                         let ridx = self.row_s + offset;
                         let rlen = self.a_row_lens[ridx];
-                        max(min(rlen, self.col_s+self.block_shape[1]), self.col_s) - self.col_s
+                        max(min(rlen, self.col_s + self.block_shape[1]), self.col_s) - self.col_s
                     })
                     .collect::<Vec<usize>>();
                 let is_tail = (0..self.block_shape[0])
@@ -413,14 +428,17 @@ impl Scheduler {
                     })
                     .collect::<Vec<bool>>();
                 // Config block tracker.
-                self.block_tracker.insert(token, BlockTracker::new(
+                self.block_tracker.insert(
                     token,
-                    [self.row_s, self.col_s],
-                    self.block_shape,
-                    false,
-                    a_cols_num,
-                    is_tail,
-                ));
+                    BlockTracker::new(
+                        token,
+                        [self.row_s, self.col_s],
+                        self.block_shape,
+                        false,
+                        a_cols_num,
+                        is_tail,
+                    ),
+                );
                 self.col_s += self.block_shape[1];
                 return Some(token);
             }
@@ -435,7 +453,7 @@ impl Scheduler {
                     .map(|offset| {
                         let ridx = self.row_s + offset;
                         let rlen = self.a_row_lens[ridx];
-                        max(min(rlen, self.col_s+self.block_shape[1]), self.col_s) - self.col_s
+                        max(min(rlen, self.col_s + self.block_shape[1]), self.col_s) - self.col_s
                     })
                     .collect::<Vec<usize>>();
                 let is_tail = (0..self.block_shape[0])
@@ -445,14 +463,17 @@ impl Scheduler {
                     })
                     .collect::<Vec<bool>>();
                 // Config block tracker.
-                self.block_tracker.insert(token, BlockTracker::new(
+                self.block_tracker.insert(
                     token,
-                    [self.row_s, self.col_s],
-                    self.block_shape,
-                    false,
-                    a_cols_num,
-                    is_tail,
-                ));
+                    BlockTracker::new(
+                        token,
+                        [self.row_s, self.col_s],
+                        self.block_shape,
+                        false,
+                        a_cols_num,
+                        is_tail,
+                    ),
+                );
                 self.col_s += self.block_shape[1];
                 return Some(token);
             } else {
@@ -465,87 +486,16 @@ impl Scheduler {
         }
     }
 
-    pub fn old_merge_task(&mut self) -> Option<Task> {
-        let mut psums = vec!();
-        let mut pnum = 0;
-
-        // If `lane_num / 2` pairs of psums are found, the a merge block is ready.
-        // trace_println!("output_tracker: {:?}", &self.output_tracker);
-        for psum_addrs in self.output_tracker.values() {
-            if pnum >= self.lane_num / 2 { break; }
-            pnum += psum_addrs.len() / 2;
-        }
-        if (pnum < self.lane_num / 2) && !self.a_traversed {
-            return None;
-        }
-
-        for (row, psum_addrs) in self.output_tracker.iter_mut() {
-            while psum_addrs.len() > 1 {
-                if psums.len() == self.lane_num { break; }
-                for addr in psum_addrs.drain(..2) {
-                    psums.push([*row, addr]);
-                }
-            }
-        }
-
-        let blk_token = self.block_token.tik();
-        let win_token = self.window_token.tik();
-        let a_cols_num = vec![2; self.lane_num / 2];
-        // let psum_addrs = vec![self.output_addr_token.tik(); self.lane_num / 2];
-        let arow_addr_pairs = (0..self.lane_num / 2)
-            .map(|r_offset| [psums[r_offset*2][0], self.output_addr_token.tik()])
-            .collect::<Vec<[usize; 2]>>();
-        // Create merge task.
-        let task = Task::new(
-            blk_token,
-            win_token,
-            2,
-            true,
-            psums.iter().map(|p| Some(Element::new(*p, 1.0))).collect(),
-        );
-        // Config output tracker.
-        for arow_addr in arow_addr_pairs.iter() {
-            self.output_tracker
-                .entry(arow_addr[0])
-                .and_modify(|ps| {
-                    ps.push(arow_addr[1]);
-                })
-                .or_insert(vec![arow_addr[1],]);
-        }
-        // Config block tracker.
-        self.block_tracker.insert(blk_token, BlockTracker::new(
-            blk_token,
-            [0, 0],
-            [self.lane_num / 2, 2],
-            true,
-            a_cols_num,
-            vec![false; self.lane_num / 2],
-        ));
-        for r_idx in 0..self.lane_num / 2 {
-            self.block_tracker.get_mut(&blk_token).unwrap().a_cols_assigned[r_idx] += 2;
-        }
-        self.block_tracker.get_mut(&blk_token).unwrap().window_tokens.push(win_token);
-        // Config window tracker.
-        self.window_tracker.insert(win_token, WindowTracker::new(
-            win_token,
-            [0, 0],
-            blk_token,
-            [self.lane_num / 2, 2],
-            psums.iter().map(|p| Some(*p)).collect::<Vec<Option<[usize; 2]>>>(),
-            arow_addr_pairs,
-        ));
-
-        return Some(task);
-    }
-
     pub fn merge_task(&mut self) -> Option<Task> {
-        let mut psums = vec!();
+        let mut psums = vec![];
         let mut pnum = 0;
 
         // If `lane_num / 2` pairs of psums are found, the a merge block is ready.
         // trace_println!("output_tracker: {:?}", &self.output_tracker);
         for psum_addrs in self.output_tracker.values() {
-            if pnum >= self.lane_num / 2 { break; }
+            if pnum >= self.lane_num / 2 {
+                break;
+            }
             pnum += psum_addrs.len() / 2;
         }
         if (self.a_traversed && pnum == 0) || (!self.a_traversed && pnum < self.lane_num / 2) {
@@ -554,7 +504,9 @@ impl Scheduler {
 
         for (row, psum_addrs) in self.output_tracker.iter_mut() {
             while psum_addrs.len() > 1 {
-                if psums.len() == self.lane_num { break; }
+                if psums.len() == self.lane_num {
+                    break;
+                }
                 for addr in psum_addrs.drain(..2) {
                     psums.push([*row, addr]);
                 }
@@ -563,19 +515,20 @@ impl Scheduler {
 
         let blk_token = self.block_token.tik();
         let win_token = self.window_token.tik();
-        let a_cols_num = (0..self.lane_num / 2).map(|r_ofst| {
-            if r_ofst < psums.len() / 2 { 2 } else { 0 }
-            }).collect();
-        let mut arow_addr_pairs = vec!();
-        let mut a_eles = vec!();
-        let mut lane2idx = vec!();
+        let a_cols_num = (0..self.lane_num / 2)
+            .map(|r_ofst| if r_ofst < psums.len() / 2 { 2 } else { 0 })
+            .collect();
+        let mut arow_addr_pairs = vec![];
+        let mut a_eles = vec![];
+        let mut lane2idx = vec![];
         for r_ofst in 0..self.lane_num / 2 {
             if r_ofst < psums.len() / 2 {
-                arow_addr_pairs.push([psums[r_ofst*2][0], self.output_addr_token.tik()]);
-                // a_eles.push(Some(Element::new(psums[r_ofst], 1.0)));
-                a_eles.extend(vec![Some(Element::new(psums[r_ofst*2], 1.0)),
-                    Some(Element::new(psums[r_ofst*2+1], 1.0))]);
-                lane2idx.extend(vec![Some(psums[r_ofst*2]), Some(psums[r_ofst*2+1])]);
+                arow_addr_pairs.push([psums[r_ofst * 2][0], self.output_addr_token.tik()]);
+                a_eles.extend(vec![
+                    Some(Element::new(psums[r_ofst * 2], 1.0)),
+                    Some(Element::new(psums[r_ofst * 2 + 1], 1.0)),
+                ]);
+                lane2idx.extend(vec![Some(psums[r_ofst * 2]), Some(psums[r_ofst * 2 + 1])]);
             } else {
                 arow_addr_pairs.push([usize::MAX, self.output_addr_token.tik()]);
                 // a_eles.push(None);
@@ -584,43 +537,57 @@ impl Scheduler {
             }
         }
         // Create merge task.
-        let task = Task::new(
-            blk_token,
-            win_token,
-            2,
-            true,
-            a_eles,
-        );
+        let task = Task::new(blk_token, win_token, 2, true, a_eles);
         // Config block tracker.
-        self.block_tracker.insert(blk_token, BlockTracker::new(
+        self.block_tracker.insert(
             blk_token,
-            [0, 0],
-            [self.lane_num / 2, 2],
-            true,
-            a_cols_num,
-            vec![false; self.lane_num / 2],
-        ));
+            BlockTracker::new(
+                blk_token,
+                [0, 0],
+                [self.lane_num / 2, 2],
+                true,
+                a_cols_num,
+                vec![false; self.lane_num / 2],
+            ),
+        );
         for r_ofst in 0..self.lane_num / 2 {
             if r_ofst < psums.len() / 2 {
-                self.block_tracker.get_mut(&blk_token).unwrap().a_cols_assigned[r_ofst] += 2;
+                self.block_tracker
+                    .get_mut(&blk_token)
+                    .unwrap()
+                    .a_cols_assigned[r_ofst] += 2;
             }
         }
-        self.block_tracker.get_mut(&blk_token).unwrap().window_tokens.push(win_token);
+        self.block_tracker
+            .get_mut(&blk_token)
+            .unwrap()
+            .window_tokens
+            .push(win_token);
         // Config window tracker.
-        self.window_tracker.insert(win_token, WindowTracker::new(
+        self.window_tracker.insert(
             win_token,
-            [0, 0],
-            blk_token,
-            [self.lane_num / 2, 2],
-            lane2idx,
-            arow_addr_pairs,
-        ));
+            WindowTracker::new(
+                win_token,
+                [0, 0],
+                blk_token,
+                [self.lane_num / 2, 2],
+                lane2idx,
+                arow_addr_pairs,
+            ),
+        );
 
         return Some(task);
     }
 
-    pub fn next_window(&mut self, block_token: usize, a_matrix: &mut CsrMatStorage) -> Option<Task> {
-        let prev_window = self.block_tracker[&block_token].window_tokens.last().map(|x|*x);
+    pub fn next_window(
+        &mut self,
+        block_token: usize,
+        a_matrix: &mut CsrMatStorage,
+    ) -> Option<Task> {
+        let prev_window = self.block_tracker[&block_token]
+            .window_tokens
+            .last()
+            .map(|x| *x);
         let window_shape: [usize; 2];
         let window_token: usize;
         let mut window_anchor: [usize; 2];
@@ -653,7 +620,12 @@ impl Scheduler {
                 while window_anchor[0] < row_lim {
                     window_anchor[1] = blk_tracker.anchor[1];
                     window_anchor[0] += window_shape[0];
-                    if !self.is_window_empty(blk_tracker.anchor, blk_tracker.shape, window_anchor, window_shape) {
+                    if !self.is_window_empty(
+                        blk_tracker.anchor,
+                        blk_tracker.shape,
+                        window_anchor,
+                        window_shape,
+                    ) {
                         break;
                     }
                 }
@@ -662,20 +634,25 @@ impl Scheduler {
                 }
             }
         }
-        let mut lane2idx = vec!();
-        let mut a_eles = vec!();
+        let mut lane2idx = vec![];
+        let mut a_eles = vec![];
         // let output_addrs = vec![self.output_addr_token.tik(); window_shape[0]];
         let output_addrs = (0..window_shape[0])
-            .map(|r_offset| [window_anchor[0]+r_offset, self.output_addr_token.tik()])
+            .map(|r_offset| [window_anchor[0] + r_offset, self.output_addr_token.tik()])
             .collect::<Vec<[usize; 2]>>();
-        for r_idx in window_anchor[0]..window_anchor[0]+window_shape[0] {
-            let num = min(max(self.a_row_lens[r_idx], window_anchor[1]),
-                window_anchor[1]+window_shape[1]) - window_anchor[1];
+        for r_idx in window_anchor[0]..window_anchor[0] + window_shape[0] {
+            let num = min(
+                max(self.a_row_lens[r_idx], window_anchor[1]),
+                window_anchor[1] + window_shape[1],
+            ) - window_anchor[1];
             let element = a_matrix.read_scalars(r_idx, window_anchor[1], num).unwrap();
             // trace_println!("win_anchor: {:?}, win_shape: {:?}, block_anchor: {:?}, element: {:?}", &window_anchor, &window_shape, &block_anchor, &element);
             let ele_len = element.len();
             // Increase assigned a col elements.
-            self.block_tracker.get_mut(&block_token).unwrap().a_cols_assigned[r_idx-block_anchor[0]] += ele_len;
+            self.block_tracker
+                .get_mut(&block_token)
+                .unwrap()
+                .a_cols_assigned[r_idx - block_anchor[0]] += ele_len;
             for mut e in element {
                 lane2idx.push(Some(e.idx));
                 e.idx = [window_token, e.idx[1]];
@@ -686,26 +663,24 @@ impl Scheduler {
                 a_eles.push(None);
             }
         }
-        // // Config output tracker.
-        // for arow_addr in output_addrs.iter() {
-        //     self.output_tracker
-        //         .entry(arow_addr[0])
-        //         .and_modify(|ps| {
-        //             ps.push(arow_addr[1]);
-        //         })
-        //         .or_insert(vec![arow_addr[1],]);
-        // }
         // Config window tracker.
-        self.window_tracker.insert(window_token, WindowTracker::new(
+        self.window_tracker.insert(
             window_token,
-            window_anchor,
-            block_token,
-            window_shape,
-            lane2idx,
-            output_addrs,
-        ));
+            WindowTracker::new(
+                window_token,
+                window_anchor,
+                block_token,
+                window_shape,
+                lane2idx,
+                output_addrs,
+            ),
+        );
         // Config block tracker.
-        self.block_tracker.get_mut(&block_token).unwrap().window_tokens.push(window_token);
+        self.block_tracker
+            .get_mut(&block_token)
+            .unwrap()
+            .window_tokens
+            .push(window_token);
         // Config task.
         let task = Some(Task::new(
             block_token,
@@ -718,7 +693,7 @@ impl Scheduler {
     }
 
     pub fn is_block_empty(&self, block_anchor: [usize; 2], block_shape: [usize; 2]) -> bool {
-        for rowid in block_anchor[0]..block_anchor[0]+block_shape[0] {
+        for rowid in block_anchor[0]..block_anchor[0] + block_shape[0] {
             if rowid >= self.a_row_num || block_anchor[1] >= self.a_row_lens[rowid] {
                 continue;
             } else {
@@ -729,8 +704,19 @@ impl Scheduler {
         return true;
     }
 
-    pub fn is_window_empty(&self, block_anchor: [usize; 2], block_shape: [usize; 2], window_anchor: [usize; 2], window_shape: [usize; 2]) -> bool {
-        for rowid in window_anchor[0]..min(window_anchor[0]+window_shape[0], block_anchor[1]+block_shape[1]) {
+    pub fn is_window_empty(
+        &self,
+        block_anchor: [usize; 2],
+        block_shape: [usize; 2],
+        window_anchor: [usize; 2],
+        window_shape: [usize; 2],
+    ) -> bool {
+        for rowid in window_anchor[0]
+            ..min(
+                window_anchor[0] + window_shape[0],
+                block_anchor[1] + block_shape[1],
+            )
+        {
             if rowid >= self.a_row_num || window_anchor[1] >= self.a_row_lens[rowid] {
                 continue;
             } else {
@@ -825,8 +811,7 @@ impl Scheduler {
                             .cost_num
                             .get_mut(&cur_row_num)
                         {
-                            let div_cost =
-                                cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
+                            let div_cost = cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
                             if div_cost < min_cost {
                                 min_cost = div_cost;
                                 self.set_row_num = cur_row_num;
@@ -851,15 +836,13 @@ impl Scheduler {
             } else {
                 // Sampling.
                 trace_println!("---Sampling");
-                min_row_num =
-                    match self.sampling_bounds.binary_search(&(self.row_s)) {
-                        Ok(idx) => 2usize.pow(idx as u32 + 1),
-                        Err(idx) => 2usize.pow(idx as u32),
-                    };
+                min_row_num = match self.sampling_bounds.binary_search(&(self.row_s)) {
+                    Ok(idx) => 2usize.pow(idx as u32 + 1),
+                    Err(idx) => 2usize.pow(idx as u32),
+                };
             }
             while min_row_num > 1
-                && (self.row_s + min_row_num
-                    >= self.a_group.groups[self.row_group].row_range[1])
+                && (self.row_s + min_row_num >= self.a_group.groups[self.row_group].row_range[1])
             {
                 min_row_num /= 2;
             }
@@ -878,8 +861,7 @@ impl Scheduler {
             let n1_token = n1_token.unwrap();
             let n1_block = self.block_tracker.get(&n1_token).unwrap().anchor;
             let n1_row_num = block_anchor[1] - n1_block[1];
-            let n1_ele_size =
-                (n1_block[1]..block_anchor[1]).fold(0, |s, x| s + self.a_row_lens[x]);
+            let n1_ele_size = (n1_block[1]..block_anchor[1]).fold(0, |s, x| s + self.a_row_lens[x]);
 
             let n2_token = self.block_topo_tracker.find_above(n1_block);
             if n2_token.is_none() {
@@ -888,8 +870,7 @@ impl Scheduler {
             let n2_token = n2_token.unwrap();
             let n2_block = self.block_tracker.get(&n2_token).unwrap().anchor;
             let n2_row_num = n1_block[1] - n2_block[1];
-            let n2_ele_size =
-                (n2_block[1]..n1_block[1]).fold(0, |s, x| s + self.a_row_lens[x]);
+            let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| s + self.a_row_lens[x]);
 
             let n1_cost = (self.block_tracker[&n1_token].miss_size
                 + self.block_tracker[&n1_token].psum_rw_size[0])
@@ -902,15 +883,16 @@ impl Scheduler {
 
             trace_println!(
                 "group_range {:?} n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
-                &self.a_group.groups[self.row_group].row_range, n1_cost, n1_ele_size, n2_cost, n2_ele_size
+                &self.a_group.groups[self.row_group].row_range,
+                n1_cost,
+                n1_ele_size,
+                n2_cost,
+                n2_ele_size
             );
 
-            if (n1_cost as f32 / n1_ele_size as f32)
-                <= (n2_cost as f32 / n2_ele_size as f32)
-            {
+            if (n1_cost as f32 / n1_ele_size as f32) <= (n2_cost as f32 / n2_ele_size as f32) {
                 if n1_row_num >= n2_row_num {
-                    self.block_shape[1] =
-                        min(self.block_shape[1] * 2, self.lane_num);
+                    self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
                 } else {
                     self.block_shape[1] = max(self.block_shape[1] / 2, 1);
                 }
@@ -918,8 +900,7 @@ impl Scheduler {
                 if n1_row_num >= n2_row_num {
                     self.block_shape[1] = max(self.block_shape[1] / 2, 1);
                 } else {
-                    self.block_shape[1] =
-                        min(self.block_shape[1] * 2, self.lane_num);
+                    self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
                 }
             }
 
@@ -957,7 +938,9 @@ impl Scheduler {
         let window_tracker = self.window_tracker.get(&window_token).unwrap();
         for i in 0..window_tracker.shape[0] {
             let arow_addr = window_tracker.arow_addr_pairs[i];
-            if arow_addr[0] == usize::MAX { continue; }
+            if arow_addr[0] == usize::MAX {
+                continue;
+            }
             self.output_tracker
                 .entry(arow_addr[0])
                 .and_modify(|ps| {
@@ -965,7 +948,7 @@ impl Scheduler {
                         ps.push(arow_addr[1])
                     }
                 })
-                .or_insert(vec![arow_addr[1],]);
+                .or_insert(vec![arow_addr[1]]);
         }
     }
 }

@@ -1,16 +1,11 @@
-use std::{
-    cmp::{min},
-    collections::{VecDeque},
-};
+use std::{cmp::min, collections::VecDeque};
 
-use storage::{Element, PriorityCache,VectorStorage};
+use storage::{Element, PriorityCache, VectorStorage};
 
 use crate::frontend::Accelerator;
 use crate::scheduler::{Scheduler, Task};
-use crate::{trace_println, trace_print};
-use crate::{
-    storage::{self, CsrMatStorage, sorted_element_vec_to_csr_row, CsrRow},
-};
+use crate::storage::{self, sorted_element_vec_to_csr_row, CsrMatStorage, CsrRow};
+use crate::{trace_print, trace_println};
 
 #[derive(Debug, Clone)]
 pub struct Multiplier {
@@ -241,16 +236,13 @@ impl PE {
         lane_num: usize,
         pop_num_per_lane: usize,
         sn_latency: usize,
-        mt_latency: usize) -> PE {
+        mt_latency: usize,
+    ) -> PE {
         PE {
             stream_buffers: vec![VecDeque::new(); lane_num],
             multipliers: vec![Multiplier::new(); lane_num],
             psum_buffers: vec![VecDeque::new(); lane_num],
-            sorting_network: SortingNetwork::new(
-                lane_num,
-                lane_num,
-                pop_num_per_lane,
-                sn_latency),
+            sorting_network: SortingNetwork::new(lane_num, lane_num, pop_num_per_lane, sn_latency),
             merge_tree: MergeTree::new(mt_latency),
             stream_buffer_size: sb_size,
             psum_buffer_size: pb_size,
@@ -262,17 +254,18 @@ impl PE {
     }
 
     pub fn idle(&self) -> bool {
-        // trace_print!("stream_buffers: {:?}", &self.stream_buffers);
-        // trace_print!("multipliers: {:?}", &self.multipliers);
-        // trace_print!("psum_buffers: {:?}", &self.psum_buffers);
-        // trace_print!("sorting_network: {:?}", &self.sorting_network);
-        // trace_print!("merge_tree: {:?}", &self.sorting_network);
-        let is_idle = self.stream_buffers.iter().fold(true,
-                |p, fd| p&&fd.is_empty())
-            && self.multipliers.iter().fold(true,
-                |p, fd| p&&fd.is_empty())
-            && self.psum_buffers.iter().fold(true,
-                |p, pb| p&&pb.is_empty())
+        let is_idle = self
+            .stream_buffers
+            .iter()
+            .fold(true, |p, fd| p && fd.is_empty())
+            && self
+                .multipliers
+                .iter()
+                .fold(true, |p, fd| p && fd.is_empty())
+            && self
+                .psum_buffers
+                .iter()
+                .fold(true, |p, pb| p && pb.is_empty())
             && self.sorting_network.is_empty()
             && self.merge_tree.is_empty();
         return is_idle;
@@ -289,10 +282,10 @@ impl PE {
                 // Accumulate for enough elements.
                 } else if !self.multipliers[lane_idx].is_empty() {
                     tail_flag = 0;
-                } 
+                }
                 // Else the row is all emitted, the tail flag can be set to MAX.
             }
-            self.tail_flags[s..s+group_size].fill(tail_flag);
+            self.tail_flags[s..s + group_size].fill(tail_flag);
         }
     }
 
@@ -310,8 +303,7 @@ impl PE {
         let group_size = self.task.as_ref().unwrap().group_size;
         if lane_idx == 0 {
             self.stream_buffers[lane_idx].pop_front()
-        } else if self.look_aside
-            && (lane_idx - 1) / group_size == lane_idx / group_size {
+        } else if self.look_aside && (lane_idx - 1) / group_size == lane_idx / group_size {
             let (ab_sb, sb) = self.stream_buffers.split_at_mut(lane_idx);
             let ab_sb = ab_sb.last_mut().unwrap();
             let sb = sb.get_mut(0).unwrap();
@@ -337,7 +329,7 @@ impl PE {
     }
 
     pub fn pop_psum_buffer(&mut self, lane_idx: usize, pop_num: usize) -> Vec<Option<Element>> {
-        let mut psums= vec![];
+        let mut psums = vec![];
         let pb = &mut self.psum_buffers[lane_idx];
         let tf = self.tail_flags[lane_idx];
         for _ in 0..pop_num {
@@ -401,7 +393,8 @@ impl<'a> CycleAccurateSimulator<'a> {
                 lane_num,
                 default_block_shape,
                 output_base_addr,
-                1.0 - b_matrix.data.len() as f32 / (b_matrix.row_num() * b_matrix.mat_shape[0]) as f32,
+                1.0 - b_matrix.data.len() as f32
+                    / (b_matrix.row_num() * b_matrix.mat_shape[0]) as f32,
                 a_matrix,
                 b_matrix,
                 var_factor,
@@ -416,7 +409,17 @@ impl<'a> CycleAccurateSimulator<'a> {
                 b_matrix,
                 psum_matrix,
             ),
-            pes: vec![PE::new(sb_size, pb_size, lane_num, pop_num_per_lane, sn_latency, mt_latency); pe_num],
+            pes: vec![
+                PE::new(
+                    sb_size,
+                    pb_size,
+                    lane_num,
+                    pop_num_per_lane,
+                    sn_latency,
+                    mt_latency
+                );
+                pe_num
+            ],
             a_matrix,
             exec_cycle: 0,
         }
@@ -442,8 +445,11 @@ impl<'a> CycleAccurateSimulator<'a> {
             for pe_idx in 0..self.pe_num {
                 // Assign new jobs if finished or init.
                 if (self.pes[pe_idx].task.is_none()
-                || self.scheduler.is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token))
-                && self.pes[pe_idx].idle() {
+                    || self
+                        .scheduler
+                        .is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token))
+                    && self.pes[pe_idx].idle()
+                {
                     // Label finished rows.
                     if self.pes[pe_idx].task.is_some() {
                         let prev_blk_tk = self.pes[pe_idx].task.as_ref().unwrap().block_token;
@@ -453,7 +459,9 @@ impl<'a> CycleAccurateSimulator<'a> {
                     }
                     // Swapout those finished rows.
                     self.swapout_finished_psums();
-                    let task = self.scheduler.assign_jobs(&mut self.pes[pe_idx], &mut self.a_matrix);
+                    let task = self
+                        .scheduler
+                        .assign_jobs(&mut self.pes[pe_idx], &mut self.a_matrix);
                     self.pes[pe_idx].set_task(task);
                     trace_println!("---pe {} new task: {:?}", pe_idx, &self.pes[pe_idx].task);
                 }
@@ -473,7 +481,12 @@ impl<'a> CycleAccurateSimulator<'a> {
                                 None => trace_print!("{:?} None  ", lane_pos),
                                 Some(idx) => {
                                     let rlen = self.scheduler.b_row_lens[&idx[1]];
-                                    trace_print!("{:?} asgn:{} len:{}  ", idx, window_tracker.b_cols_assigned[lane_pos], rlen);
+                                    trace_print!(
+                                        "{:?} asgn:{} len:{}  ",
+                                        idx,
+                                        window_tracker.b_cols_assigned[lane_pos],
+                                        rlen
+                                    );
                                 }
                             }
                         }
@@ -489,8 +502,8 @@ impl<'a> CycleAccurateSimulator<'a> {
             for pe_idx in 0..self.pe_num {
                 // Stream buffer fetch data.
                 for lane_idx in 0..self.lane_num {
-                    let rb_num = self.pes[pe_idx].stream_buffer_size -
-                        self.pes[pe_idx].stream_buffers[lane_idx].len();
+                    let rb_num = self.pes[pe_idx].stream_buffer_size
+                        - self.pes[pe_idx].stream_buffers[lane_idx].len();
                     let bs = self.stream_b_row(pe_idx, lane_idx, rb_num);
                     // trace_print!("-stream b {:?} to {}", &bs, lane_idx);
                     self.pes[pe_idx].push_stream_buffer(lane_idx, bs);
@@ -507,7 +520,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                     self.pes[pe_idx].multipliers[lane_idx].set_b(b);
                     self.pes[pe_idx].multipliers[lane_idx].multiply();
                     // Push prod to the psum buffer.
-                    trace_print!("{}:{:?} ", lane_idx, prod.as_ref().map(|p|p.idx));
+                    trace_print!("{}:{:?} ", lane_idx, prod.as_ref().map(|p| p.idx));
                     if prod.is_some() {
                         self.pes[pe_idx].push_psum_buffer(lane_idx, prod.unwrap());
                     }
@@ -528,7 +541,13 @@ impl<'a> CycleAccurateSimulator<'a> {
                         == self.lane_num * self.pes[pe_idx].sorting_network.ele_per_lane,
                     "Invalid collected psums num!"
                 );
-                trace_println!("-collected psums: {:?}", &collected_psums.iter().map(|p|p.as_ref().map(|_p| _p.idx)).collect::<Vec<Option<[usize; 2]>>>());
+                trace_println!(
+                    "-collected psums: {:?}",
+                    &collected_psums
+                        .iter()
+                        .map(|p| p.as_ref().map(|_p| _p.idx))
+                        .collect::<Vec<Option<[usize; 2]>>>()
+                );
                 if collected_psums.iter().any(|p| p.is_some()) {
                     self.pes[pe_idx]
                         .sorting_network
@@ -548,26 +567,14 @@ impl<'a> CycleAccurateSimulator<'a> {
 
                 // When a window is finished, collect merge jobs.
                 if self.pes[pe_idx].task.is_some()
-                && self.scheduler.is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token) {
-                    self.scheduler.collect_pending_psums(self.pes[pe_idx].task.as_ref().unwrap().window_token);
+                    && self
+                        .scheduler
+                        .is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token)
+                {
+                    self.scheduler.collect_pending_psums(
+                        self.pes[pe_idx].task.as_ref().unwrap().window_token,
+                    );
                 }
-
-                // // Swapout those finished rows.
-                // trace_print!("finished a rows: {:?} ", &self.scheduler.finished_a_rows);
-                // let output_tracker = &mut self.scheduler.output_tracker;
-                // for id in self.scheduler.finished_a_rows.iter() {
-                //     trace_print!("{:?} ", &output_tracker[id]);
-                // }
-                // trace_println!("");
-                // let swapable_rows = self.scheduler.finished_a_rows
-                //     .drain_filter(|row| {
-                //     output_tracker.get(row).map_or(true, |ps| ps.len() == 1)
-                //     })
-                //     .collect::<Vec<usize>>();
-                // trace_println!("swapable_rows: {:?}", &swapable_rows);
-                // for row in swapable_rows {
-                //     self.fiber_cache.swapout(output_tracker[&row][0]);
-                // }
             }
 
             trace_println!(
@@ -608,29 +615,40 @@ impl<'a> CycleAccurateSimulator<'a> {
 
             self.exec_cycle += 1;
         }
-
-
     }
 
     pub fn stream_b_row(&mut self, pe_idx: usize, lane_idx: usize, rb_num: usize) -> Vec<Element> {
         if self.pes[pe_idx].task.is_none() {
-            return vec!();
+            return vec![];
         }
         let task = self.pes[pe_idx].task.as_ref().unwrap();
 
-        let window_tracker = self.scheduler.window_tracker.get_mut(&task.window_token).unwrap();
+        let window_tracker = self
+            .scheduler
+            .window_tracker
+            .get_mut(&task.window_token)
+            .unwrap();
         let scalar_idx = window_tracker.lane2idx[lane_idx];
         if scalar_idx.is_none() {
-            return vec!();
+            return vec![];
         }
 
         let scalar_idx = scalar_idx.unwrap();
         let b_col_idx = window_tracker.b_cols_assigned[lane_idx];
-        trace_println!("scalar_idx {:?} b_col_idx {} rb_num {}", scalar_idx, b_col_idx, rb_num);
+        trace_println!(
+            "scalar_idx {:?} b_col_idx {} rb_num {}",
+            scalar_idx,
+            b_col_idx,
+            rb_num
+        );
         let elements = if self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
-            self.fiber_cache.consume_scalars(scalar_idx, b_col_idx, rb_num).unwrap()
+            self.fiber_cache
+                .consume_scalars(scalar_idx, b_col_idx, rb_num)
+                .unwrap()
         } else {
-            self.fiber_cache.read_scalars(scalar_idx, b_col_idx, rb_num).unwrap()
+            self.fiber_cache
+                .read_scalars(scalar_idx, b_col_idx, rb_num)
+                .unwrap()
         };
         window_tracker.b_cols_assigned[lane_idx] += elements.len();
 
@@ -649,13 +667,11 @@ impl<'a> CycleAccurateSimulator<'a> {
             }
             let mut csrrow = sorted_element_vec_to_csr_row(ps);
             let addr = self.scheduler.window_tracker[&task.window_token].arow_addr_pairs[gidx][1];
-            // let a_row_idx = self.scheduler.window_tracker[&task.window_token].lane2idx[gidx*task.group_size].unwrap();
-            // // Assign the real row index.
-            // csrrow.rowptr = a_row_idx[0];
             // Assign the output address.
             csrrow.rowptr = addr;
             trace_println!("-write_psum: {:?}", &csrrow);
-            self.scheduler.b_row_lens
+            self.scheduler
+                .b_row_lens
                 .entry(addr)
                 .and_modify(|l| *l += csrrow.len())
                 .or_insert(csrrow.len());
@@ -670,10 +686,10 @@ impl<'a> CycleAccurateSimulator<'a> {
             trace_print!("{:?} ", &output_tracker[id]);
         }
         trace_println!("");
-        let swapable_rows = self.scheduler.finished_a_rows
-            .drain_filter(|row| {
-            output_tracker.get(row).map_or(true, |ps| ps.len() == 1)
-            })
+        let swapable_rows = self
+            .scheduler
+            .finished_a_rows
+            .drain_filter(|row| output_tracker.get(row).map_or(true, |ps| ps.len() == 1))
             .collect::<Vec<usize>>();
         trace_println!("swapable_rows: {:?}", &swapable_rows);
         for row in swapable_rows {
@@ -686,11 +702,17 @@ impl<'a> CycleAccurateSimulator<'a> {
     }
 
     pub fn get_b_mat_stat(&self) -> [usize; 2] {
-        [self.fiber_cache.b_mem.read_count, self.fiber_cache.b_mem.write_count]
+        [
+            self.fiber_cache.b_mem.read_count,
+            self.fiber_cache.b_mem.write_count,
+        ]
     }
 
     pub fn get_c_mat_stat(&self) -> [usize; 2] {
-        [self.fiber_cache.psum_mem.read_count, self.fiber_cache.psum_mem.write_count]
+        [
+            self.fiber_cache.psum_mem.read_count,
+            self.fiber_cache.psum_mem.write_count,
+        ]
     }
 
     pub fn get_exec_cycle(&self) -> usize {
