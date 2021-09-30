@@ -431,18 +431,34 @@ impl<'a> CycleAccurateSimulator<'a> {
         loop {
             trace_println!("\n---- cycle {}", self.exec_cycle);
 
-            let prev_a_mem_read_count = self.a_matrix.read_count;
-            let prev_b_mem_read_count = self.fiber_cache.b_mem.read_count;
-            let prev_psum_mem_read_count = self.fiber_cache.psum_mem.read_count;
-            let prev_psum_mem_write_count = self.fiber_cache.psum_mem.write_count;
-            let prev_miss_count = self.fiber_cache.miss_count;
-            let prev_b_evict_count = self.fiber_cache.b_evict_count;
-            let prev_psum_evict_count = self.fiber_cache.psum_evict_count;
-            let prev_cache_read_count = self.fiber_cache.read_count;
-            let prev_cache_write_count = self.fiber_cache.write_count;
+            // let prev_a_mem_read_count = self.a_matrix.read_count;
+            // let prev_b_mem_read_count = self.fiber_cache.b_mem.read_count;
+            // let prev_psum_mem_read_count = self.fiber_cache.psum_mem.read_count;
+            // let prev_psum_mem_write_count = self.fiber_cache.psum_mem.write_count;
+            // let prev_miss_count = self.fiber_cache.miss_count;
+            // let prev_b_evict_count = self.fiber_cache.b_evict_count;
+            // let prev_psum_evict_count = self.fiber_cache.psum_evict_count;
+            // let prev_cache_read_count = self.fiber_cache.read_count;
+            // let prev_cache_write_count = self.fiber_cache.write_count;
+
+            let prev_a_r = self.a_matrix.read_count;
+            let mut prev_b_rs = vec![0; self.pe_num];
+            let mut prev_psum_rs = vec![0; self.pe_num];
+            let mut prev_psum_ws = vec![0; self.pe_num];
+            let prev_cache_miss = self.fiber_cache.miss_count;
+            let prev_b_evict = self.fiber_cache.b_evict_count;
+            let prev_psum_evict = self.fiber_cache.psum_evict_count;
+            let mut prev_cache_rs = vec![0; self.pe_num];
+            let mut prev_cache_ws = vec![0; self.pe_num];
 
             // Fetch data stage.
             for pe_idx in 0..self.pe_num {
+                // Collect prev exec stats.
+                prev_b_rs[pe_idx] = self.fiber_cache.b_mem.read_count;
+                prev_psum_rs[pe_idx] = self.fiber_cache.psum_mem.read_count;
+                prev_psum_ws[pe_idx] = self.fiber_cache.psum_mem.write_count;
+                prev_cache_rs[pe_idx] = self.fiber_cache.read_count;
+                prev_cache_ws[pe_idx] = self.fiber_cache.write_count;
                 // Assign new jobs if finished or init.
                 if (self.pes[pe_idx].task.is_none()
                     || self
@@ -450,18 +466,43 @@ impl<'a> CycleAccurateSimulator<'a> {
                         .is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token))
                     && self.pes[pe_idx].idle()
                 {
-                    // Label finished rows.
-                    if self.pes[pe_idx].task.is_some() {
+                    // Collect stats of the prev finished task.
+                    if self.pes[pe_idx].task.is_some() && !self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
                         let prev_blk_tk = self.pes[pe_idx].task.as_ref().unwrap().block_token;
                         if self.scheduler.is_block_finished(prev_blk_tk) {
+                            // Label finished rows.
                             self.scheduler.label_finished_rows(prev_blk_tk);
+                            match self.scheduler.accelerator {
+                                Accelerator::NewOmega => {
+                                    // Update the rowwise adjust tracker.
+                                    let block_tracker = &self.scheduler.block_tracker[&prev_blk_tk];
+                                    let blk_row_s = block_tracker.anchor[0];
+                                    let row_num = block_tracker.shape[0];
+                                    let grp_idx = self.scheduler.a_group.rgmap[&blk_row_s];
+                                    let cost = (block_tracker.miss_size
+                                        + block_tracker.psum_rw_size[0])
+                                        * 100
+                                        + block_tracker.psum_rw_size[1];
+                                    let ele_size = block_tracker.a_cols_num.iter().sum();
+                                    self.scheduler.a_group.groups[grp_idx]
+                                        .cost_num
+                                        .entry(row_num)
+                                        .and_modify(|e| {
+                                            e[0] += cost;
+                                            e[1] += ele_size;
+                                        })
+                                        .or_insert([cost, ele_size]);
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     // Swapout those finished rows.
                     self.swapout_finished_psums();
+                    // Assign new tasks.
                     let task = self
                         .scheduler
-                        .assign_jobs(&mut self.pes[pe_idx], &mut self.a_matrix);
+                        .assign_tasks(&mut self.pes[pe_idx], &mut self.a_matrix);
                     self.pes[pe_idx].set_task(task);
                     trace_println!("---pe {} new task: {:?}", pe_idx, &self.pes[pe_idx].task);
                 }
@@ -565,23 +606,46 @@ impl<'a> CycleAccurateSimulator<'a> {
                 trace_println!("-merged psum: {:?}", &merged_psums);
                 self.write_psums(pe_idx, merged_psums);
 
-                // When a window is finished, collect merge jobs.
-                if self.pes[pe_idx].task.is_some()
-                    && self
+                // // When a window is finished, collect merge jobs.
+                // if self.pes[pe_idx].task.is_some()
+                //     && self
+                //         .scheduler
+                //         .is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token)
+                // {
+                //     self.scheduler.collect_pending_psums(
+                //         self.pes[pe_idx].task.as_ref().unwrap().window_token,
+                //     );
+                // }
+
+                if self.pes[pe_idx].task.is_some() {
+                    let blk_token = self.pes[pe_idx].task.as_ref().unwrap().block_token;
+                    // Collect post exec info.
+                    let delta_b = self.fiber_cache.b_mem.read_count - prev_b_rs[pe_idx];
+                    let delta_psum = self.fiber_cache.psum_mem.read_count
+                        + self.fiber_cache.psum_mem.write_count
+                        - prev_psum_rs[pe_idx]
+                        - prev_psum_ws[pe_idx];
+                    let delta_cache = self.fiber_cache.read_count
+                        + self.fiber_cache.write_count
+                        - prev_cache_rs[pe_idx]
+                        - prev_cache_ws[pe_idx];
+                    // Update block tracker.
+                    let tracker = self
                         .scheduler
-                        .is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token)
-                {
-                    self.scheduler.collect_pending_psums(
-                        self.pes[pe_idx].task.as_ref().unwrap().window_token,
-                    );
+                        .block_tracker
+                        .get_mut(&blk_token)
+                        .unwrap();
+                    tracker.miss_size += delta_b;
+                    tracker.psum_rw_size[0] += delta_psum;
+                    tracker.psum_rw_size[1] += delta_cache;
                 }
             }
 
             trace_println!(
                 "Cache read_count: + {} -> {}, write_count: + {} -> {}",
-                self.fiber_cache.read_count - prev_cache_read_count,
+                self.fiber_cache.read_count - prev_cache_rs[0],
                 self.fiber_cache.read_count,
-                self.fiber_cache.write_count - prev_cache_write_count,
+                self.fiber_cache.write_count - prev_cache_ws[0],
                 self.fiber_cache.write_count
             );
             trace_println!(
@@ -592,24 +656,24 @@ impl<'a> CycleAccurateSimulator<'a> {
                 self.fiber_cache.b_occp
             );
             trace_println!("Cache miss_count: + {} -> {}, b_evict_count: + {} -> {}, psum_evict_count: + {} -> {}",
-                self.fiber_cache.miss_count - prev_miss_count, self.fiber_cache.miss_count,
-                self.fiber_cache.b_evict_count - prev_b_evict_count, self.fiber_cache.b_evict_count,
-                self.fiber_cache.psum_evict_count - prev_psum_evict_count, self.fiber_cache.psum_evict_count);
+                self.fiber_cache.miss_count - prev_cache_miss, self.fiber_cache.miss_count,
+                self.fiber_cache.b_evict_count - prev_b_evict, self.fiber_cache.b_evict_count,
+                self.fiber_cache.psum_evict_count - prev_psum_evict, self.fiber_cache.psum_evict_count);
             trace_println!(
                 "A mem: read_count: + {} -> {}",
-                self.a_matrix.read_count - prev_a_mem_read_count,
+                self.a_matrix.read_count - prev_a_r,
                 self.a_matrix.read_count
             );
             trace_println!(
                 "B mem: read_count: + {} -> {}",
-                self.fiber_cache.b_mem.read_count - prev_b_mem_read_count,
+                self.fiber_cache.b_mem.read_count - prev_b_rs[0],
                 self.fiber_cache.b_mem.read_count
             );
             trace_println!(
                 "C mem: read_count: + {} -> {}, write_count: +{} -> {}",
-                self.fiber_cache.psum_mem.read_count - prev_psum_mem_read_count,
+                self.fiber_cache.psum_mem.read_count - prev_psum_rs[0],
                 self.fiber_cache.psum_mem.read_count,
-                self.fiber_cache.psum_mem.write_count - prev_psum_mem_write_count,
+                self.fiber_cache.psum_mem.write_count - prev_psum_ws[0],
                 self.fiber_cache.psum_mem.write_count
             );
 
@@ -635,12 +699,12 @@ impl<'a> CycleAccurateSimulator<'a> {
 
         let scalar_idx = scalar_idx.unwrap();
         let b_col_idx = window_tracker.b_cols_assigned[lane_idx];
-        trace_println!(
-            "scalar_idx {:?} b_col_idx {} rb_num {}",
-            scalar_idx,
-            b_col_idx,
-            rb_num
-        );
+        // trace_println!(
+        //     "scalar_idx {:?} b_col_idx {} rb_num {}",
+        //     scalar_idx,
+        //     b_col_idx,
+        //     rb_num
+        // );
         let elements = if self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
             self.fiber_cache
                 .consume_scalars(scalar_idx, b_col_idx, rb_num)
@@ -660,23 +724,38 @@ impl<'a> CycleAccurateSimulator<'a> {
             return;
         }
         let task = self.pes[pe_idx].task.as_ref().unwrap();
-
+        
+        // Write psums to cache.
         for (gidx, ps) in psums.into_iter().enumerate() {
             if ps.len() == 0 {
                 continue;
             }
             let mut csrrow = sorted_element_vec_to_csr_row(ps);
-            let addr = self.scheduler.window_tracker[&task.window_token].arow_addr_pairs[gidx][1];
+            let window_tracker = self.scheduler.window_tracker.get(&task.window_token).unwrap();
+            let arow_addr = window_tracker.arow_addr_pairs[gidx];
             // Assign the output address.
-            csrrow.rowptr = addr;
+            csrrow.rowptr = arow_addr[1];
             trace_println!("-write_psum: {:?}", &csrrow);
             self.scheduler
                 .b_row_lens
-                .entry(addr)
+                .entry(arow_addr[1])
                 .and_modify(|l| *l += csrrow.len())
                 .or_insert(csrrow.len());
-            self.fiber_cache.append_psum_to(addr, csrrow);
+            self.fiber_cache.append_psum_to(arow_addr[1], csrrow);
+
+            // Update pending psums.
+            self.scheduler
+                .output_tracker
+                .entry(arow_addr[0])
+                .and_modify(|ps| {
+                    if !ps.contains(&arow_addr[1]) {
+                        ps.push(arow_addr[1])
+                    }
+                })
+                .or_insert(vec![arow_addr[1]]);
         }
+
+
     }
 
     pub fn swapout_finished_psums(&mut self) {

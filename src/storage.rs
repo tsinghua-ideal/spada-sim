@@ -382,6 +382,8 @@ impl CsrMatStorage {
                 "Invalid row_ptr: {}",
                 row_idx
             )));
+        } else if num == 0 {
+            return Ok(vec!());
         }
 
         let row_idx = if self.remapped {

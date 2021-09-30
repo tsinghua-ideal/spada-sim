@@ -320,7 +320,7 @@ fn main() {
                 Accelerator::Ip => omega_config.block_shape,
                 Accelerator::Omega => [omega_config.block_shape[0], omega_config.block_shape[1]],
                 Accelerator::Op => [usize::MAX, 1],
-                Accelerator::NewOmega => [omega_config.block_shape[0], omega_config.block_shape[1]],
+                Accelerator::NewOmega => omega_config.block_shape,
             };
 
             let mut cycle_simu = CycleAccurateSimulator::new(

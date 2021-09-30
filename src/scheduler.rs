@@ -273,12 +273,12 @@ pub struct Scheduler {
     col_s: usize,
     block_shape: [usize; 2],
     a_row_num: usize,
-    accelerator: Accelerator,
+    pub accelerator: Accelerator,
     a_row_lens: Vec<usize>,
     pub b_row_lens: HashMap<usize, usize>,
     // Adjust scheme.
     b_sparsity: f32,
-    a_group: GroupTracker,
+    pub a_group: GroupTracker,
     b_group: GroupTracker,
     row_group: usize,
     sampling_bounds: Vec<usize>,
@@ -338,7 +338,7 @@ impl Scheduler {
         }
     }
 
-    pub fn assign_jobs(&mut self, pe: &mut PE, a_matrix: &mut CsrMatStorage) -> Option<Task> {
+    pub fn assign_tasks(&mut self, pe: &mut PE, a_matrix: &mut CsrMatStorage) -> Option<Task> {
         if pe.task.is_none() || self.is_block_finished(pe.task.as_ref().unwrap().block_token) {
             // If any merge block is ready, assign the merge block.
             if let Some(task) = self.merge_task() {
@@ -606,7 +606,7 @@ impl Scheduler {
             window_shape = window.shape;
             block_anchor = blk_tracker.anchor;
             let row_lim = blk_tracker.anchor[0] + blk_tracker.shape[0];
-            let col_lim = blk_tracker.anchor[1] + blk_tracker.shape[1];
+            let col_lim = blk_tracker.anchor[1] + min(blk_tracker.shape[1], *blk_tracker.a_cols_num.iter().max().unwrap());
             // Return if finished.
             if window_anchor[0] >= row_lim {
                 return None;
@@ -777,10 +777,12 @@ impl Scheduler {
         let sample_num = 4;
         let mut min_row_num = 1;
 
+        trace_println!("rgmap: {} cur_group: {}", self.a_group.rgmap[&self.row_s], self.row_group);
+
         // First check if the row group changed and prepare for sampling.
         if self.a_group.rgmap[&self.row_s] != self.row_group {
             // Start from row_num = 1 to touch the distribution.
-            self.block_shape[1] = 1;
+            self.block_shape[0] = 1;
             self.row_group = self.a_group.rgmap[&self.row_s];
             let cur_gi = &self.a_group.groups[self.row_group];
             if cur_gi.row_range[1] - cur_gi.row_range[0] > group_diviser {
@@ -798,6 +800,7 @@ impl Scheduler {
         }
 
         let cur_gi = &self.a_group.groups[self.row_group];
+        trace_println!("cur_gi: {:?}", &cur_gi);
         if cur_gi.row_range[1] - cur_gi.row_range[0] > group_diviser {
             // Treat the wide groups.
             if self.row_s >= *self.sampling_bounds.last().unwrap() {
@@ -851,7 +854,7 @@ impl Scheduler {
                 &self.a_group.groups[self.row_group].row_range,
                 self.a_group.groups[self.row_group].cost_num
             );
-            self.block_shape[1] = min_row_num;
+            self.block_shape[0] = min_row_num;
         } else {
             // Treat the narrow groups.
             let n1_token = self.block_topo_tracker.find_above(block_anchor);
@@ -892,30 +895,30 @@ impl Scheduler {
 
             if (n1_cost as f32 / n1_ele_size as f32) <= (n2_cost as f32 / n2_ele_size as f32) {
                 if n1_row_num >= n2_row_num {
-                    self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                    self.block_shape[0] = min(self.block_shape[0] * 2, self.lane_num);
                 } else {
-                    self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                    self.block_shape[0] = max(self.block_shape[0] / 2, 1);
                 }
             } else {
                 if n1_row_num >= n2_row_num {
-                    self.block_shape[1] = max(self.block_shape[1] / 2, 1);
+                    self.block_shape[0] = max(self.block_shape[0] / 2, 1);
                 } else {
-                    self.block_shape[1] = min(self.block_shape[1] * 2, self.lane_num);
+                    self.block_shape[0] = min(self.block_shape[0] * 2, self.lane_num);
                 }
             }
 
-            while self.block_shape[1] > 1
-                && (self.row_s + self.block_shape[1]
+            while self.block_shape[0] > 1
+                && (self.row_s + self.block_shape[0]
                     >= self.a_group.groups[self.row_group].row_range[1])
             {
-                self.block_shape[1] /= 2;
+                self.block_shape[0] /= 2;
             }
         }
     }
 
     pub fn colwise_block_regular_adjust_scheme(&mut self, block_anchor: [usize; 2]) {
         trace_println!("-Colwise regular adjust.");
-        // If at the begin of a row, A
+        // Emperically set block to 8*8 shape.
     }
 
     pub fn colwise_block_irregular_adjust_scheme(&mut self, block_anchor: [usize; 2]) {
@@ -923,13 +926,15 @@ impl Scheduler {
     }
 
     pub fn adjust_window(&mut self, block_token: usize) -> [usize; 2] {
-        if self.accelerator == Accelerator::NewOmega {
-            return [self.block_shape[0], self.lane_num / self.block_shape[1]];
-        }
-
         match self.accelerator {
-            Accelerator::Ip | Accelerator::Omega | Accelerator::Op | Accelerator::NewOmega => {
+            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
                 return [self.block_shape[0], self.lane_num / self.block_shape[0]];
+            }
+            Accelerator::NewOmega => {
+                let scheme = 0;
+                match scheme {
+                    _ => return [self.block_shape[0], self.lane_num / self.block_shape[0]],
+                }
             }
         }
     }
