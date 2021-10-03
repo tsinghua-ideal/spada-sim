@@ -5,6 +5,8 @@ use crate::frontend::Accelerator;
 use crate::pqcache_omega_simulator::PE;
 use crate::storage::{CsrMatStorage, Element};
 use crate::{trace_print, trace_println};
+use crate::rowwise_block_adjust::RowwiseBlockAdjustTracker;
+use crate::block_topo_tracker::BlockTopoTracker;
 
 #[derive(Debug, Clone)]
 pub struct Task {
@@ -53,142 +55,6 @@ impl Token {
     }
 }
 
-pub struct BlockTopoTracker {
-    pub row_s_list: Vec<usize>,
-    pub col_s_list: Vec<Vec<usize>>,
-    pub token_list: Vec<Vec<usize>>,
-}
-
-impl BlockTopoTracker {
-    pub fn new() -> BlockTopoTracker {
-        BlockTopoTracker {
-            row_s_list: vec![],
-            col_s_list: vec![],
-            token_list: vec![],
-        }
-    }
-
-    pub fn find_left(&self, cur_block: [usize; 2]) -> Option<usize> {
-        let row_pos = match self.row_s_list.binary_search(&cur_block[1]) {
-            Ok(r) | Err(r) => r as i32 - 1,
-        };
-        if row_pos < 0 {
-            return None;
-        }
-        let row_pos = row_pos as usize;
-
-        let col_pos = match self.col_s_list[row_pos].binary_search(&cur_block[0]) {
-            Ok(c) | Err(c) => c as i32 - 1,
-        };
-
-        if col_pos < 0 {
-            return None;
-        } else {
-            return Some(self.token_list[row_pos][col_pos as usize]);
-        }
-    }
-
-    pub fn find_above(&self, cur_block: [usize; 2]) -> Option<usize> {
-        let row_pos = match self.row_s_list.binary_search(&cur_block[1]) {
-            Ok(r) | Err(r) => r as i32 - 1,
-        };
-
-        if row_pos < 0 || self.col_s_list[row_pos as usize].len() == 0 {
-            return None;
-        }
-
-        let row_pos = row_pos as usize;
-
-        match self.col_s_list[row_pos].binary_search(&cur_block[0]) {
-            Ok(c) => Some(self.token_list[row_pos][c]),
-            Err(c) => {
-                let c_l = max(c - 1, 0);
-                let c_r = min(c + 1, self.col_s_list[row_pos].len() - 1);
-                if (cur_block[0] as i64 - self.col_s_list[row_pos][c_l] as i64).abs()
-                    >= (self.col_s_list[row_pos][c_r] as i64 - cur_block[0] as i64).abs()
-                {
-                    return Some(self.token_list[row_pos][c_r]);
-                } else {
-                    return Some(self.token_list[row_pos][c_l]);
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct GroupInfo {
-    pub row_range: [usize; 2],
-    pub avg_row_len: usize,
-    pub cost_num: HashMap<usize, [usize; 2]>,
-}
-
-#[derive(Debug, Clone)]
-pub struct GroupTracker {
-    pub groups: Vec<GroupInfo>,
-    pub rgmap: HashMap<usize, usize>,
-}
-
-impl GroupTracker {
-    pub fn new() -> GroupTracker {
-        GroupTracker {
-            groups: vec![],
-            rgmap: HashMap::new(),
-        }
-    }
-
-    pub fn add_group(&mut self, gi: GroupInfo) {
-        self.groups.push(gi);
-        let last_idx = self.groups.len() - 1;
-        for rowidx in self.groups[last_idx].row_range[0]..self.groups[last_idx].row_range[1] {
-            self.rgmap.insert(rowidx, last_idx);
-        }
-    }
-}
-
-pub fn parse_group(matrix: &CsrMatStorage, var_factor: f32) -> GroupTracker {
-    let mut gt = GroupTracker::new();
-    let mut prev_row_len = usize::MAX;
-    let mut row_s = 0;
-
-    // Parse matrix.
-    for idx in 0..matrix.row_num() + 1 {
-        if idx == matrix.row_num() {
-            // Finish the last group.
-            let gi = GroupInfo {
-                row_range: [row_s, idx],
-                avg_row_len: (matrix.get_ele_num(row_s, idx)) / (idx - row_s),
-                cost_num: HashMap::new(),
-            };
-            gt.add_group(gi);
-        } else {
-            let row_len = matrix.get_ele_num(idx, idx + 1);
-            if row_len == 0 {
-                continue;
-            } else if prev_row_len == usize::MAX {
-                // Init the first group.
-                prev_row_len = row_len;
-            } else if prev_row_len as f32 * var_factor < row_len as f32
-                || prev_row_len as f32 > var_factor * row_len as f32
-            {
-                // Encounter a new group. Save the current one.
-                let gi = GroupInfo {
-                    row_range: [row_s, idx],
-                    avg_row_len: (matrix.get_ele_num(row_s, idx)) / (idx - row_s),
-                    cost_num: HashMap::new(),
-                };
-                gt.add_group(gi);
-                prev_row_len = row_len;
-                row_s = idx;
-            } else {
-                prev_row_len = row_len;
-            }
-        }
-    }
-
-    return gt;
-}
-
 pub struct BlockTracker {
     // Config.
     pub token: usize,
@@ -199,9 +65,6 @@ pub struct BlockTracker {
     pub a_cols_assigned: Vec<usize>,
     pub a_cols_num: Vec<usize>,
     pub window_tokens: Vec<usize>,
-    // Adjust block related.
-    pub miss_size: usize,
-    pub psum_rw_size: [usize; 2],
     // Merge related.
     pub is_tail: Vec<bool>,
 }
@@ -223,8 +86,6 @@ impl BlockTracker {
             a_cols_assigned: vec![0; a_cols_num.len()],
             a_cols_num,
             window_tokens: vec![],
-            miss_size: 0,
-            psum_rw_size: [0, 0],
             is_tail,
         }
     }
@@ -278,11 +139,7 @@ pub struct Scheduler {
     pub b_row_lens: HashMap<usize, usize>,
     // Adjust scheme.
     b_sparsity: f32,
-    pub a_group: GroupTracker,
-    b_group: GroupTracker,
-    row_group: usize,
-    sampling_bounds: Vec<usize>,
-    set_row_num: usize,
+    pub rowwise_adjust_tracker: RowwiseBlockAdjustTracker,
     // Assign job related.
     pub block_tracker: HashMap<usize, BlockTracker>, // block_anchor -> BlockTracker
     pub window_tracker: HashMap<usize, WindowTracker>, // window_token -> WindowTracker
@@ -322,11 +179,6 @@ impl Scheduler {
                 .map(|idx| (idx, b_matrix.get_ele_num(idx, idx + 1)))
                 .collect::<HashMap<usize, usize>>(),
             b_sparsity,
-            a_group: parse_group(a_matrix, var_factor),
-            b_group: parse_group(b_matrix, var_factor),
-            row_group: usize::MAX,
-            sampling_bounds: vec![],
-            set_row_num: usize::MAX,
             block_tracker: HashMap::new(),
             window_tracker: HashMap::new(),
             output_tracker: HashMap::new(),
@@ -335,6 +187,7 @@ impl Scheduler {
             window_token: Token::new(),
             block_token: Token::new(),
             finished_a_rows: HashSet::new(),
+            rowwise_adjust_tracker: RowwiseBlockAdjustTracker::new(lane_num, a_matrix, b_matrix, var_factor),
         }
     }
 
@@ -410,6 +263,7 @@ impl Scheduler {
             if self.row_s == usize::MAX && self.col_s == usize::MAX {
                 self.row_s = 0;
                 self.col_s = 0;
+                // Config block tracker.
                 if let Accelerator::NewOmega = self.accelerator {
                     self.adjust_block([self.row_s, self.col_s]);
                 }
@@ -427,7 +281,6 @@ impl Scheduler {
                         self.col_s + self.block_shape[1] >= self.a_row_lens[ridx]
                     })
                     .collect::<Vec<bool>>();
-                // Config block tracker.
                 self.block_tracker.insert(
                     token,
                     BlockTracker::new(
@@ -439,6 +292,9 @@ impl Scheduler {
                         is_tail,
                     ),
                 );
+                // Config block topo tracker.
+                self.block_topo_tracker.add_block(token, [self.row_s, self.col_s]);
+                // Move col_s to next position.
                 self.col_s += self.block_shape[1];
                 return Some(token);
             }
@@ -474,6 +330,9 @@ impl Scheduler {
                         is_tail,
                     ),
                 );
+                // Config block topo tracker.
+                self.block_topo_tracker.add_block(token, [self.row_s, self.col_s]);
+                // Move col_s to next position.
                 self.col_s += self.block_shape[1];
                 return Some(token);
             } else {
@@ -752,16 +611,12 @@ impl Scheduler {
     pub fn adjust_block(&mut self, block_anchor: [usize; 2]) {
         match self.accelerator {
             Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
-                // First check if the row group changed.
-                if self.a_group.rgmap[&self.row_s] != self.row_group {
-                    self.row_group = self.a_group.rgmap[&self.row_s];
-                    return;
-                }
+                return;
             }
             Accelerator::NewOmega => {
                 let block_adjust_scheme = 8;
-                match block_adjust_scheme {
-                    8 => self.rowwise_block_adjust_scheme(block_anchor),
+                self.block_shape = match block_adjust_scheme {
+                    8 => self.rowwise_adjust_tracker.adjust_block_shape(block_anchor, self.row_s, self.block_shape, &self.block_topo_tracker, &self.a_row_lens),
                     9 => self.colwise_block_regular_adjust_scheme(block_anchor),
                     10 => self.colwise_block_irregular_adjust_scheme(block_anchor),
                     _ => panic!("Invalid merge scheme: {}", block_adjust_scheme),
@@ -770,159 +625,15 @@ impl Scheduler {
         }
     }
 
-    pub fn rowwise_block_adjust_scheme(&mut self, block_anchor: [usize; 2]) {
-        trace_println!("-Rowwise adjust");
-        // Separately treat wide groups and narrow groups.
-        let group_diviser = 128;
-        let sample_num = 4;
-        let mut min_row_num = 1;
-
-        trace_println!("rgmap: {} cur_group: {}", self.a_group.rgmap[&self.row_s], self.row_group);
-
-        // First check if the row group changed and prepare for sampling.
-        if self.a_group.rgmap[&self.row_s] != self.row_group {
-            // Start from row_num = 1 to touch the distribution.
-            self.block_shape[0] = 1;
-            self.row_group = self.a_group.rgmap[&self.row_s];
-            let cur_gi = &self.a_group.groups[self.row_group];
-            if cur_gi.row_range[1] - cur_gi.row_range[0] > group_diviser {
-                let mut cur_row = self.row_s + 1;
-                let mut i = 1;
-                self.sampling_bounds.clear();
-                while i <= self.lane_num {
-                    cur_row += sample_num * i;
-                    self.sampling_bounds.push(cur_row);
-                    i *= 2;
-                }
-            }
-            self.set_row_num = usize::MAX;
-            return;
-        }
-
-        let cur_gi = &self.a_group.groups[self.row_group];
-        trace_println!("cur_gi: {:?}", &cur_gi);
-        if cur_gi.row_range[1] - cur_gi.row_range[0] > group_diviser {
-            // Treat the wide groups.
-            if self.row_s >= *self.sampling_bounds.last().unwrap() {
-                if self.set_row_num == usize::MAX {
-                    // Sampling finished.
-                    // Then adjust based on the cost of different row num.
-                    let mut min_cost = f32::MAX;
-                    let mut cur_row_num = 1;
-                    while cur_row_num <= self.lane_num {
-                        if let Some(cost_num) = self.a_group.groups[self.row_group]
-                            .cost_num
-                            .get_mut(&cur_row_num)
-                        {
-                            let div_cost = cost_num[0] as f32 / (cost_num[1] as f32 + 0.0001);
-                            if div_cost < min_cost {
-                                min_cost = div_cost;
-                                self.set_row_num = cur_row_num;
-                            }
-                        } else {
-                            self.a_group.groups[self.row_group]
-                                .cost_num
-                                .insert(cur_row_num, [0, 0]);
-                            self.set_row_num = cur_row_num;
-                            break;
-                        }
-                        cur_row_num *= 2;
-                    }
-                    while cur_row_num > 1
-                        && (self.row_s + cur_row_num
-                            >= self.a_group.groups[self.row_group].row_range[1])
-                    {
-                        cur_row_num /= 2;
-                    }
-                }
-                min_row_num = self.set_row_num;
-            } else {
-                // Sampling.
-                trace_println!("---Sampling");
-                min_row_num = match self.sampling_bounds.binary_search(&(self.row_s)) {
-                    Ok(idx) => 2usize.pow(idx as u32 + 1),
-                    Err(idx) => 2usize.pow(idx as u32),
-                };
-            }
-            while min_row_num > 1
-                && (self.row_s + min_row_num >= self.a_group.groups[self.row_group].row_range[1])
-            {
-                min_row_num /= 2;
-            }
-            trace_println!(
-                "group_range {:?} cost num: {:?}",
-                &self.a_group.groups[self.row_group].row_range,
-                self.a_group.groups[self.row_group].cost_num
-            );
-            self.block_shape[0] = min_row_num;
-        } else {
-            // Treat the narrow groups.
-            let n1_token = self.block_topo_tracker.find_above(block_anchor);
-            if n1_token.is_none() {
-                return;
-            }
-            let n1_token = n1_token.unwrap();
-            let n1_block = self.block_tracker.get(&n1_token).unwrap().anchor;
-            let n1_row_num = block_anchor[1] - n1_block[1];
-            let n1_ele_size = (n1_block[1]..block_anchor[1]).fold(0, |s, x| s + self.a_row_lens[x]);
-
-            let n2_token = self.block_topo_tracker.find_above(n1_block);
-            if n2_token.is_none() {
-                return;
-            }
-            let n2_token = n2_token.unwrap();
-            let n2_block = self.block_tracker.get(&n2_token).unwrap().anchor;
-            let n2_row_num = n1_block[1] - n2_block[1];
-            let n2_ele_size = (n2_block[1]..n1_block[1]).fold(0, |s, x| s + self.a_row_lens[x]);
-
-            let n1_cost = (self.block_tracker[&n1_token].miss_size
-                + self.block_tracker[&n1_token].psum_rw_size[0])
-                * 100
-                + self.block_tracker[&n1_token].psum_rw_size[1];
-            let n2_cost = (self.block_tracker[&n2_token].miss_size
-                + self.block_tracker[&n2_token].psum_rw_size[0])
-                * 100
-                + self.block_tracker[&n2_token].psum_rw_size[1];
-
-            trace_println!(
-                "group_range {:?} n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
-                &self.a_group.groups[self.row_group].row_range,
-                n1_cost,
-                n1_ele_size,
-                n2_cost,
-                n2_ele_size
-            );
-
-            if (n1_cost as f32 / n1_ele_size as f32) <= (n2_cost as f32 / n2_ele_size as f32) {
-                if n1_row_num >= n2_row_num {
-                    self.block_shape[0] = min(self.block_shape[0] * 2, self.lane_num);
-                } else {
-                    self.block_shape[0] = max(self.block_shape[0] / 2, 1);
-                }
-            } else {
-                if n1_row_num >= n2_row_num {
-                    self.block_shape[0] = max(self.block_shape[0] / 2, 1);
-                } else {
-                    self.block_shape[0] = min(self.block_shape[0] * 2, self.lane_num);
-                }
-            }
-
-            while self.block_shape[0] > 1
-                && (self.row_s + self.block_shape[0]
-                    >= self.a_group.groups[self.row_group].row_range[1])
-            {
-                self.block_shape[0] /= 2;
-            }
-        }
-    }
-
-    pub fn colwise_block_regular_adjust_scheme(&mut self, block_anchor: [usize; 2]) {
+    pub fn colwise_block_regular_adjust_scheme(&mut self, block_anchor: [usize; 2]) -> [usize; 2] {
         trace_println!("-Colwise regular adjust.");
         // Emperically set block to 8*8 shape.
+        unimplemented!()
     }
 
-    pub fn colwise_block_irregular_adjust_scheme(&mut self, block_anchor: [usize; 2]) {
+    pub fn colwise_block_irregular_adjust_scheme(&mut self, block_anchor: [usize; 2]) -> [usize; 2] {
         trace_println!("-Colwise irregular adjust.");
+        unimplemented!()
     }
 
     pub fn adjust_window(&mut self, block_token: usize) -> [usize; 2] {

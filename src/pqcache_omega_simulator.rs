@@ -476,22 +476,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                                 Accelerator::NewOmega => {
                                     // Update the rowwise adjust tracker.
                                     let block_tracker = &self.scheduler.block_tracker[&prev_blk_tk];
-                                    let blk_row_s = block_tracker.anchor[0];
-                                    let row_num = block_tracker.shape[0];
-                                    let grp_idx = self.scheduler.a_group.rgmap[&blk_row_s];
-                                    let cost = (block_tracker.miss_size
-                                        + block_tracker.psum_rw_size[0])
-                                        * 100
-                                        + block_tracker.psum_rw_size[1];
-                                    let ele_size = block_tracker.a_cols_num.iter().sum();
-                                    self.scheduler.a_group.groups[grp_idx]
-                                        .cost_num
-                                        .entry(row_num)
-                                        .and_modify(|e| {
-                                            e[0] += cost;
-                                            e[1] += ele_size;
-                                        })
-                                        .or_insert([cost, ele_size]);
+                                    self.scheduler.rowwise_adjust_tracker.update_group_cost(block_tracker);
                                 }
                                 _ => {}
                             }
@@ -632,7 +617,8 @@ impl<'a> CycleAccurateSimulator<'a> {
                     // Update block tracker.
                     let tracker = self
                         .scheduler
-                        .block_tracker
+                        .rowwise_adjust_tracker
+                        .block_info
                         .get_mut(&blk_token)
                         .unwrap();
                     tracker.miss_size += delta_b;
