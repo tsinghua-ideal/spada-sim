@@ -79,11 +79,22 @@ pub fn parse_group(matrix: &CsrMatStorage, var_factor: f32) -> GroupTracker {
 }
 
 pub struct RowwiseBlockInfo {
+    pub a_ele_num: usize,
     pub miss_size: usize,
     pub psum_rw_size: [usize; 2],
 }
 
-pub struct RowwiseBlockAdjustTracker {
+impl RowwiseBlockInfo {
+    pub fn new(a_ele_num: usize) -> RowwiseBlockInfo {
+        RowwiseBlockInfo {
+            a_ele_num,
+            miss_size: 0,
+            psum_rw_size: [0; 2],
+        }
+    }
+}
+
+pub struct RowwiseAdjustTracker {
     pub block_info: HashMap<usize, RowwiseBlockInfo>, // block_token -> rowwise block info
     pub a_group: GroupTracker,
     pub b_group: GroupTracker,
@@ -93,10 +104,10 @@ pub struct RowwiseBlockAdjustTracker {
     pub lane_num: usize,
 }
 
-impl RowwiseBlockAdjustTracker {
+impl RowwiseAdjustTracker {
     pub fn new(lane_num: usize, a_matrix: &CsrMatStorage, b_matrix: &CsrMatStorage, var_factor: f32)
-        -> RowwiseBlockAdjustTracker {
-        RowwiseBlockAdjustTracker {
+        -> RowwiseAdjustTracker {
+        RowwiseAdjustTracker {
             block_info: HashMap::new(),
             a_group: parse_group(a_matrix, var_factor),
             b_group: parse_group(b_matrix, var_factor),
@@ -274,5 +285,9 @@ impl RowwiseBlockAdjustTracker {
             e[1] += ele_size;
         })
         .or_insert([cost, ele_size]);
+    }
+
+    pub fn adjust_window_shape(&mut self, block_shape: [usize; 2]) -> [usize; 2] {
+        return [block_shape[0], self.lane_num / block_shape[0]];
     }
 }

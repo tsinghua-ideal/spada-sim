@@ -14,8 +14,9 @@ mod scheduler;
 mod storage;
 mod storage_traffic_model;
 mod util;
-mod rowwise_block_adjust;
 mod block_topo_tracker;
+mod rowwise_adjust;
+mod colwise_reg_adjust;
 
 use std::cmp::min;
 

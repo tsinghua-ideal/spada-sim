@@ -591,17 +591,6 @@ impl<'a> CycleAccurateSimulator<'a> {
                 trace_println!("-merged psum: {:?}", &merged_psums);
                 self.write_psums(pe_idx, merged_psums);
 
-                // // When a window is finished, collect merge jobs.
-                // if self.pes[pe_idx].task.is_some()
-                //     && self
-                //         .scheduler
-                //         .is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token)
-                // {
-                //     self.scheduler.collect_pending_psums(
-                //         self.pes[pe_idx].task.as_ref().unwrap().window_token,
-                //     );
-                // }
-
                 if self.pes[pe_idx].task.is_some() {
                     let blk_token = self.pes[pe_idx].task.as_ref().unwrap().block_token;
                     // Collect post exec info.
@@ -615,15 +604,18 @@ impl<'a> CycleAccurateSimulator<'a> {
                         - prev_cache_rs[pe_idx]
                         - prev_cache_ws[pe_idx];
                     // Update block tracker.
-                    let tracker = self
-                        .scheduler
-                        .rowwise_adjust_tracker
-                        .block_info
-                        .get_mut(&blk_token)
-                        .unwrap();
-                    tracker.miss_size += delta_b;
-                    tracker.psum_rw_size[0] += delta_psum;
-                    tracker.psum_rw_size[1] += delta_cache;
+                    if !self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
+                        self.update_adjust_tracker(blk_token, delta_b, delta_psum, delta_cache);
+                        let tracker = self
+                            .scheduler
+                            .rowwise_adjust_tracker
+                            .block_info
+                            .get_mut(&blk_token)
+                            .unwrap();
+                        tracker.miss_size += delta_b;
+                        tracker.psum_rw_size[0] += delta_psum;
+                        tracker.psum_rw_size[1] += delta_cache;
+                    }
                 }
             }
 
@@ -745,20 +737,21 @@ impl<'a> CycleAccurateSimulator<'a> {
     }
 
     pub fn swapout_finished_psums(&mut self) {
-        trace_print!("finished a rows: {:?} ", &self.scheduler.finished_a_rows);
+        trace_print!("finished a rows: {:?} ", &self.scheduler.a_tail_produced);
         let output_tracker = &mut self.scheduler.output_tracker;
-        for id in self.scheduler.finished_a_rows.iter() {
+        for id in self.scheduler.a_tail_produced.iter() {
             trace_print!("{:?} ", &output_tracker[id]);
         }
         trace_println!("");
         let swapable_rows = self
             .scheduler
-            .finished_a_rows
+            .a_tail_produced
             .drain_filter(|row| output_tracker.get(row).map_or(true, |ps| ps.len() == 1))
             .collect::<Vec<usize>>();
         trace_println!("swapable_rows: {:?}", &swapable_rows);
         for row in swapable_rows {
             self.fiber_cache.swapout(output_tracker[&row][0]);
+            self.scheduler.a_row_finished.insert(row);
         }
     }
 
@@ -821,5 +814,28 @@ impl<'a> CycleAccurateSimulator<'a> {
         }
         c.sort_by(|a, b| a.rowptr.cmp(&b.rowptr));
         return c;
+    }
+
+    pub fn update_adjust_tracker(&mut self, block_token: usize, delta_b: usize, delta_psum: usize, delta_cache: usize) {
+        // Rowwise adjust tracker.
+        let rowwise_tracker = self
+            .scheduler
+            .rowwise_adjust_tracker
+            .block_info
+            .get_mut(&block_token)
+            .unwrap();
+        rowwise_tracker.miss_size += delta_b;
+        rowwise_tracker.psum_rw_size[0] += delta_psum;
+        rowwise_tracker.psum_rw_size[1] += delta_cache;
+        // Colwise reg adjust tracker.
+        let colwise_reg_tracker = self
+            .scheduler
+            .colwise_reg_adjust_tracker
+            .block_info
+            .get_mut(&block_token)
+            .unwrap();
+        colwise_reg_tracker.miss_size += delta_b;
+        colwise_reg_tracker.psum_rw_size[0] += delta_psum;
+        colwise_reg_tracker.psum_rw_size[1] += delta_cache;
     }
 }
