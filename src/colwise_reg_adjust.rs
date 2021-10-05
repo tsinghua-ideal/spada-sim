@@ -37,9 +37,12 @@ impl ColwiseRegBlockAdjustTracker {
         }
     }
 
-    pub fn adjust_block_shape(&self) -> [usize; 2] {
+    pub fn adjust_block_shape(&self, row_s: usize, a_row_lens: usize) -> [usize; 2] {
         // Regular colwise block adjust scheme now sets a regular block size.
-        let block_shape = [8 as usize; 2];
+        let mut block_shape = [8 as usize; 2];
+        while row_s + block_shape[0] > a_row_lens {
+            block_shape[0] = min(1, block_shape[0] / 2);
+        }
         return block_shape;
     }
 

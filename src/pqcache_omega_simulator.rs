@@ -487,7 +487,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                     // Assign new tasks.
                     let task = self
                         .scheduler
-                        .assign_tasks(&mut self.pes[pe_idx], &mut self.a_matrix);
+                        .assign_task(&mut self.pes[pe_idx], &mut self.a_matrix);
                     self.pes[pe_idx].set_task(task);
                     trace_println!("---pe {} new task: {:?}", pe_idx, &self.pes[pe_idx].task);
                 }
@@ -732,8 +732,6 @@ impl<'a> CycleAccurateSimulator<'a> {
                 })
                 .or_insert(vec![arow_addr[1]]);
         }
-
-
     }
 
     pub fn swapout_finished_psums(&mut self) {

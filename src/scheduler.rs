@@ -196,7 +196,7 @@ impl Scheduler {
         }
     }
 
-    pub fn assign_tasks(&mut self, pe: &mut PE, a_matrix: &mut CsrMatStorage) -> Option<Task> {
+    pub fn assign_task(&mut self, pe: &mut PE, a_matrix: &mut CsrMatStorage) -> Option<Task> {
         if pe.task.is_none() || self.is_block_finished(pe.task.as_ref().unwrap().block_token) {
             // If any merge block is ready, assign the merge block.
             if let Some(task) = self.merge_task() {
@@ -603,7 +603,7 @@ impl Scheduler {
                 let scheme = 1;
                 self.block_shape = match scheme {
                     0 => self.rowwise_adjust_tracker.adjust_block_shape(block_anchor, self.row_s, self.block_shape, &self.block_topo_tracker, &self.a_row_lens),
-                    1 => self.colwise_reg_adjust_tracker.adjust_block_shape(),
+                    1 => self.colwise_reg_adjust_tracker.adjust_block_shape(self.row_s, self.a_row_num),
                     2 => self.colwise_block_irregular_adjust_scheme(block_anchor),
                     _ => panic!("Invalid merge scheme: {}", scheme),
                 }
