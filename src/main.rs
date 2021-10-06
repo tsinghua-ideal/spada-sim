@@ -337,6 +337,8 @@ fn main() {
                 &mut dram_b,
                 &mut dram_psum,
                 cli.accelerator.clone(),
+                omega_config.mem_latency,
+                omega_config.cache_latency,
             );
 
             cycle_simu.execute();

@@ -138,6 +138,8 @@ pub struct Scheduler {
     pub accelerator: Accelerator,
     a_row_lens: Vec<usize>,
     pub b_row_lens: HashMap<usize, usize>,
+    pub mem_latency: usize,
+    pub cache_latency: usize,
     // Adjust scheme.
     b_sparsity: f32,
     pub rowwise_adjust_tracker: RowwiseAdjustTracker,
@@ -165,6 +167,8 @@ impl Scheduler {
         b_matrix: &CsrMatStorage,
         var_factor: f32,
         accelerator: Accelerator,
+        mem_latency: usize,
+        cache_latency: usize,
     ) -> Scheduler {
         Scheduler {
             a_traversed: false,
@@ -193,14 +197,16 @@ impl Scheduler {
             a_row_finished: HashSet::new(),
             rowwise_adjust_tracker: RowwiseAdjustTracker::new(lane_num, a_matrix, b_matrix, var_factor),
             colwise_reg_adjust_tracker: ColwiseRegBlockAdjustTracker::new(lane_num),
+            mem_latency,
+            cache_latency,
         }
     }
 
-    pub fn assign_task(&mut self, pe: &mut PE, a_matrix: &mut CsrMatStorage) -> Option<Task> {
+    pub fn assign_task(&mut self, pe: &mut PE, a_matrix: &mut CsrMatStorage) -> Option<(usize, Task)> {
         if pe.task.is_none() || self.is_block_finished(pe.task.as_ref().unwrap().block_token) {
             // If any merge block is ready, assign the merge block.
             if let Some(task) = self.merge_task() {
-                return Some(task);
+                return Some((0, task));
             }
             // Otherwise allocate a new block.
             match self.next_block() {
@@ -208,14 +214,14 @@ impl Scheduler {
                     self.a_traversed = true;
                     // Check if there are some merge tasks remained.
                     if let Some(task) = self.merge_task() {
-                        return Some(task);
+                        return Some((0, task));
                     } else {
                         return None;
                     }
                 }
                 Some(blk_token) => {
-                    let task = self.next_window(blk_token, a_matrix);
-                    return task;
+                    let latency_task = self.next_window(blk_token, a_matrix);
+                    return latency_task;
                 }
             }
         } else {
@@ -223,8 +229,8 @@ impl Scheduler {
                 None => {
                     return None;
                 }
-                Some(task) => {
-                    return Some(task);
+                Some(latency_task) => {
+                    return Some(latency_task);
                 }
             }
         }
@@ -428,7 +434,7 @@ impl Scheduler {
         &mut self,
         block_token: usize,
         a_matrix: &mut CsrMatStorage,
-    ) -> Option<Task> {
+    ) -> Option<(usize, Task)> {
         let prev_window = self.block_tracker[&block_token]
             .window_tokens
             .last()
@@ -437,11 +443,13 @@ impl Scheduler {
         let window_token: usize;
         let mut window_anchor: [usize; 2];
         let block_anchor: [usize; 2];
+        let a_latency: usize;
         if prev_window.is_none() {
             window_shape = self.adjust_window(block_token);
             window_token = self.window_token.tik();
             window_anchor = self.block_tracker.get_mut(&block_token).unwrap().anchor;
             block_anchor = self.block_tracker.get_mut(&block_token).unwrap().anchor;
+            a_latency = self.mem_latency;
         } else {
             let prev_window = prev_window.unwrap();
             let blk_tracker = self.block_tracker.get(&block_token).unwrap();
@@ -478,6 +486,7 @@ impl Scheduler {
                     return None;
                 }
             }
+            a_latency = 0;
         }
         let mut lane2idx = vec![];
         let mut a_eles = vec![];
@@ -491,13 +500,15 @@ impl Scheduler {
                 window_anchor[1] + window_shape[1],
             ) - window_anchor[1];
             let element = a_matrix.read_scalars(r_idx, window_anchor[1], num).unwrap();
-            // trace_println!("win_anchor: {:?}, win_shape: {:?}, block_anchor: {:?}, element: {:?}", &window_anchor, &window_shape, &block_anchor, &element);
             let ele_len = element.len();
             // Increase assigned a col elements.
+            let block_tracker =
             self.block_tracker
-                .get_mut(&block_token)
-                .unwrap()
-                .a_cols_assigned[r_idx - block_anchor[0]] += ele_len;
+            .get_mut(&block_token)
+            .unwrap();
+            trace_println!("a_cols_assigned: {:?}", block_tracker.a_cols_assigned);
+            trace_println!("win_anchor: {:?}, win_shape: {:?}, block_anchor: {:?}, block_shape: {:?}", &window_anchor, &window_shape, &block_anchor, &block_tracker.shape);
+            block_tracker.a_cols_assigned[r_idx - block_anchor[0]] += ele_len;
             for mut e in element {
                 lane2idx.push(Some(e.idx));
                 e.idx = [window_token, e.idx[1]];
@@ -527,14 +538,14 @@ impl Scheduler {
             .window_tokens
             .push(window_token);
         // Config task.
-        let task = Some(Task::new(
+        let task = Task::new(
             block_token,
             window_token,
             window_shape[1],
             false,
             a_eles,
-        ));
-        return task;
+        );
+        return Some((a_latency, task));
     }
 
     pub fn is_block_empty(&self, block_anchor: [usize; 2], block_shape: [usize; 2]) -> bool {
@@ -626,7 +637,7 @@ impl Scheduler {
                 match scheme {
                     0 => self.rowwise_adjust_tracker.adjust_window_shape(self.block_tracker[&block_token].shape),
                     1 => self.colwise_reg_adjust_tracker.adjust_window_shape(block_token,
-                        self.block_tracker[&block_token].anchor, &self.block_topo_tracker),
+                        self.block_tracker[&block_token].anchor, self.block_tracker[&block_token].shape, &self.block_topo_tracker),
                     _ => panic!("Invalid adjust scheme: {}", scheme),
                 }
             }

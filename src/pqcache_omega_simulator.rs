@@ -1,10 +1,7 @@
-use std::{cmp::min, collections::VecDeque};
-
-use storage::{Element, PriorityCache, VectorStorage};
-
+use std::{cmp::{max, min}, collections::VecDeque};
 use crate::frontend::Accelerator;
 use crate::scheduler::{Scheduler, Task};
-use crate::storage::{self, sorted_element_vec_to_csr_row, CsrMatStorage, CsrRow};
+use crate::storage::{sorted_element_vec_to_csr_row, CsrMatStorage, CsrRow, Element, LatencyPriorityCache, VectorStorage};
 use crate::{trace_print, trace_println};
 
 #[derive(Debug, Clone)]
@@ -342,18 +339,22 @@ impl PE {
         return psums;
     }
 
-    pub fn set_task(&mut self, task: Option<Task>) {
-        self.task = task.clone();
+    pub fn set_task(&mut self, task: Option<(usize, Task)>) -> usize {
         if task.is_none() {
             for lane_idx in 0..self.lane_num {
                 self.multipliers[lane_idx].set_a(None);
             }
             // Pb, sn, mt remain the previous configuration.
+            self.task = None;
+            return 0;
         } else {
-            self.sorting_network.group_lane_num = task.as_ref().unwrap().group_size;
-            for (lane_idx, e) in task.unwrap().a_eles.into_iter().enumerate() {
+            let (a_latency, task) = task.unwrap();
+            self.task = Some(task.clone());
+            self.sorting_network.group_lane_num = task.group_size;
+            for (lane_idx, e) in task.a_eles.into_iter().enumerate() {
                 self.multipliers[lane_idx].set_a(e);
             }
+            return a_latency;
         }
     }
 }
@@ -361,11 +362,12 @@ impl PE {
 pub struct CycleAccurateSimulator<'a> {
     pe_num: usize,
     lane_num: usize,
-    fiber_cache: PriorityCache<'a>,
+    fiber_cache: LatencyPriorityCache<'a>,
     pes: Vec<PE>,
     a_matrix: &'a mut CsrMatStorage,
     exec_cycle: usize,
     scheduler: Scheduler,
+    pub pending_cycle: Vec<usize>,
 }
 
 impl<'a> CycleAccurateSimulator<'a> {
@@ -380,6 +382,8 @@ impl<'a> CycleAccurateSimulator<'a> {
         b_matrix: &'a mut CsrMatStorage,
         psum_matrix: &'a mut VectorStorage,
         accelerator: Accelerator,
+        mem_latency: usize,
+        cache_latency: usize,
     ) -> CycleAccurateSimulator<'a> {
         let var_factor = 1.5;
         let sb_size = 4;
@@ -399,15 +403,19 @@ impl<'a> CycleAccurateSimulator<'a> {
                 b_matrix,
                 var_factor,
                 accelerator,
+                mem_latency,
+                cache_latency,
             ),
             pe_num,
             lane_num,
-            fiber_cache: PriorityCache::new(
+            fiber_cache: LatencyPriorityCache::new(
                 cache_size,
                 word_byte,
                 output_base_addr,
                 b_matrix,
                 psum_matrix,
+                mem_latency,
+                cache_latency,
             ),
             pes: vec![
                 PE::new(
@@ -422,6 +430,7 @@ impl<'a> CycleAccurateSimulator<'a> {
             ],
             a_matrix,
             exec_cycle: 0,
+            pending_cycle: vec![0; pe_num],
         }
     }
 
@@ -430,16 +439,6 @@ impl<'a> CycleAccurateSimulator<'a> {
         self.exec_cycle = 0;
         loop {
             trace_println!("\n---- cycle {}", self.exec_cycle);
-
-            // let prev_a_mem_read_count = self.a_matrix.read_count;
-            // let prev_b_mem_read_count = self.fiber_cache.b_mem.read_count;
-            // let prev_psum_mem_read_count = self.fiber_cache.psum_mem.read_count;
-            // let prev_psum_mem_write_count = self.fiber_cache.psum_mem.write_count;
-            // let prev_miss_count = self.fiber_cache.miss_count;
-            // let prev_b_evict_count = self.fiber_cache.b_evict_count;
-            // let prev_psum_evict_count = self.fiber_cache.psum_evict_count;
-            // let prev_cache_read_count = self.fiber_cache.read_count;
-            // let prev_cache_write_count = self.fiber_cache.write_count;
 
             let prev_a_r = self.a_matrix.read_count;
             let mut prev_b_rs = vec![0; self.pe_num];
@@ -453,6 +452,11 @@ impl<'a> CycleAccurateSimulator<'a> {
 
             // Fetch data stage.
             for pe_idx in 0..self.pe_num {
+                // Pending when access a or b matrix.
+                if self.pending_cycle[pe_idx] > 0 {
+                    self.pending_cycle[pe_idx] -= 1;
+                    continue;
+                }
                 // Collect prev exec stats.
                 prev_b_rs[pe_idx] = self.fiber_cache.b_mem.read_count;
                 prev_psum_rs[pe_idx] = self.fiber_cache.psum_mem.read_count;
@@ -488,7 +492,8 @@ impl<'a> CycleAccurateSimulator<'a> {
                     let task = self
                         .scheduler
                         .assign_task(&mut self.pes[pe_idx], &mut self.a_matrix);
-                    self.pes[pe_idx].set_task(task);
+                    let latency = self.pes[pe_idx].set_task(task);
+                    self.pending_cycle[pe_idx] += latency;
                     trace_println!("---pe {} new task: {:?}", pe_idx, &self.pes[pe_idx].task);
                 }
                 if self.pes[pe_idx].task.is_some() {
@@ -518,21 +523,26 @@ impl<'a> CycleAccurateSimulator<'a> {
                         }
                     }
                     trace_println!("");
+                } else {
+                    continue;
                 }
-            }
 
-            if self.scheduler.a_traversed && self.pes.iter().all(|p| p.idle() && p.task.is_none()) {
-                break;
-            }
-
-            for pe_idx in 0..self.pe_num {
                 // Stream buffer fetch data.
+                let mut max_latency = 0;
                 for lane_idx in 0..self.lane_num {
                     let rb_num = self.pes[pe_idx].stream_buffer_size
                         - self.pes[pe_idx].stream_buffers[lane_idx].len();
-                    let bs = self.stream_b_row(pe_idx, lane_idx, rb_num);
+                    let (latency, bs) = self.stream_b_row(pe_idx, lane_idx, rb_num);
+                    max_latency = max(max_latency, latency);
                     // trace_print!("-stream b {:?} to {}", &bs, lane_idx);
                     self.pes[pe_idx].push_stream_buffer(lane_idx, bs);
+                }
+                self.pending_cycle[pe_idx] += max_latency;
+
+                // Pending when access a or b matrix.
+                if self.pending_cycle[pe_idx] > 0 {
+                    self.pending_cycle[pe_idx] -= 1;
+                    continue;
                 }
 
                 // Production phase.
@@ -619,6 +629,10 @@ impl<'a> CycleAccurateSimulator<'a> {
                 }
             }
 
+            if self.scheduler.a_traversed && self.pes.iter().all(|p| p.idle() && p.task.is_none()) {
+                break;
+            }
+
             trace_println!(
                 "Cache read_count: + {} -> {}, write_count: + {} -> {}",
                 self.fiber_cache.read_count - prev_cache_rs[0],
@@ -659,9 +673,9 @@ impl<'a> CycleAccurateSimulator<'a> {
         }
     }
 
-    pub fn stream_b_row(&mut self, pe_idx: usize, lane_idx: usize, rb_num: usize) -> Vec<Element> {
+    pub fn stream_b_row(&mut self, pe_idx: usize, lane_idx: usize, rb_num: usize) -> (usize, Vec<Element>) {
         if self.pes[pe_idx].task.is_none() {
-            return vec![];
+            return (0, vec![]);
         }
         let task = self.pes[pe_idx].task.as_ref().unwrap();
 
@@ -672,7 +686,7 @@ impl<'a> CycleAccurateSimulator<'a> {
             .unwrap();
         let scalar_idx = window_tracker.lane2idx[lane_idx];
         if scalar_idx.is_none() {
-            return vec![];
+            return (0, vec![]);
         }
 
         let scalar_idx = scalar_idx.unwrap();
@@ -683,7 +697,7 @@ impl<'a> CycleAccurateSimulator<'a> {
         //     b_col_idx,
         //     rb_num
         // );
-        let elements = if self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
+        let latency_elements = if self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
             self.fiber_cache
                 .consume_scalars(scalar_idx, b_col_idx, rb_num)
                 .unwrap()
@@ -692,9 +706,9 @@ impl<'a> CycleAccurateSimulator<'a> {
                 .read_scalars(scalar_idx, b_col_idx, rb_num)
                 .unwrap()
         };
-        window_tracker.b_cols_assigned[lane_idx] += elements.len();
+        window_tracker.b_cols_assigned[lane_idx] += latency_elements.1.len();
 
-        return elements;
+        return latency_elements;
     }
 
     pub fn write_psums(&mut self, pe_idx: usize, psums: Vec<Vec<Element>>) {
