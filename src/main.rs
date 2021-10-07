@@ -17,6 +17,7 @@ mod util;
 mod block_topo_tracker;
 mod rowwise_adjust;
 mod colwise_reg_adjust;
+mod colwise_irr_adjust;
 
 use std::cmp::min;
 

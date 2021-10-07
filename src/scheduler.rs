@@ -7,6 +7,7 @@ use crate::storage::{CsrMatStorage, Element};
 use crate::{trace_print, trace_println};
 use crate::rowwise_adjust::{RowwiseBlockInfo, RowwiseAdjustTracker};
 use crate::colwise_reg_adjust::{ColwiseRegBlockInfo, ColwiseRegBlockAdjustTracker};
+use crate::colwise_irr_adjust::{ColwiseIrrBlockInfo, ColwiseIrrBlockAdjustTracker};
 use crate::block_topo_tracker::BlockTopoTracker;
 
 #[derive(Debug, Clone)]
@@ -144,6 +145,7 @@ pub struct Scheduler {
     b_sparsity: f32,
     pub rowwise_adjust_tracker: RowwiseAdjustTracker,
     pub colwise_reg_adjust_tracker: ColwiseRegBlockAdjustTracker,
+    pub colwise_irr_adjust_tracker: ColwiseIrrBlockAdjustTracker,
     // Assign job related.
     pub block_tracker: HashMap<usize, BlockTracker>, // block_anchor -> BlockTracker
     pub window_tracker: HashMap<usize, WindowTracker>, // window_token -> WindowTracker
@@ -154,6 +156,7 @@ pub struct Scheduler {
     block_token: Token,
     pub a_tail_produced: HashSet<usize>,
     pub a_row_finished: HashSet<usize>,
+    pub a_cols_assigned: Vec<usize>,
 }
 
 impl Scheduler {
@@ -197,8 +200,10 @@ impl Scheduler {
             a_row_finished: HashSet::new(),
             rowwise_adjust_tracker: RowwiseAdjustTracker::new(lane_num, a_matrix, b_matrix, var_factor),
             colwise_reg_adjust_tracker: ColwiseRegBlockAdjustTracker::new(lane_num),
+            colwise_irr_adjust_tracker: ColwiseIrrBlockAdjustTracker::new(lane_num, lane_num, lane_num),
             mem_latency,
             cache_latency,
+            a_cols_assigned: vec![0; a_matrix.row_num()],
         }
     }
 
@@ -305,7 +310,7 @@ impl Scheduler {
                 return None;
             }
             // Prefer to allocate along K dim.
-            else if !self.is_block_empty([self.row_s, self.col_s], self.block_shape) {
+            else if !self.is_block_valid([self.row_s, self.col_s], self.block_shape) {
                 // Get block stats.
                 let token = self.block_token.tik();
                 let a_cols_num = (0..self.block_shape[0])
@@ -473,7 +478,7 @@ impl Scheduler {
                 while window_anchor[0] < row_lim {
                     window_anchor[1] = blk_tracker.anchor[1];
                     window_anchor[0] += window_shape[0];
-                    if !self.is_window_empty(
+                    if !self.is_window_valid(
                         blk_tracker.anchor,
                         blk_tracker.shape,
                         window_anchor,
@@ -548,10 +553,12 @@ impl Scheduler {
         return Some((a_latency, task));
     }
 
-    pub fn is_block_empty(&self, block_anchor: [usize; 2], block_shape: [usize; 2]) -> bool {
+    pub fn is_block_valid(&self, block_anchor: [usize; 2], block_shape: [usize; 2]) -> bool {
         for rowid in block_anchor[0]..block_anchor[0] + block_shape[0] {
             if rowid >= self.a_row_num || block_anchor[1] >= self.a_row_lens[rowid] {
                 continue;
+            } else if block_anchor[1] < self.a_cols_assigned[rowid] {
+                return true;
             } else {
                 return false;
             }
@@ -560,7 +567,7 @@ impl Scheduler {
         return true;
     }
 
-    pub fn is_window_empty(
+    pub fn is_window_valid(
         &self,
         block_anchor: [usize; 2],
         block_shape: [usize; 2],
@@ -611,20 +618,15 @@ impl Scheduler {
                 return;
             }
             Accelerator::NewOmega => {
-                let scheme = 1;
+                let scheme = 2;
                 self.block_shape = match scheme {
                     0 => self.rowwise_adjust_tracker.adjust_block_shape(block_anchor, self.row_s, self.block_shape, &self.block_topo_tracker, &self.a_row_lens),
                     1 => self.colwise_reg_adjust_tracker.adjust_block_shape(self.row_s, self.a_row_num),
-                    2 => self.colwise_block_irregular_adjust_scheme(block_anchor),
+                    2 => self.colwise_irr_adjust_tracker.adjust_block_shape(self.row_s, self.col_s, self.a_row_num, &&self.block_topo_tracker),
                     _ => panic!("Invalid merge scheme: {}", scheme),
                 }
             }
         }
-    }
-
-    pub fn colwise_block_irregular_adjust_scheme(&mut self, block_anchor: [usize; 2]) -> [usize; 2] {
-        trace_println!("-Colwise irregular adjust.");
-        unimplemented!()
     }
 
     pub fn adjust_window(&mut self, block_token: usize) -> [usize; 2] {
@@ -633,38 +635,26 @@ impl Scheduler {
                 return [self.block_shape[0], self.lane_num / self.block_shape[0]];
             }
             Accelerator::NewOmega => {
-                let scheme = 1;
+                let scheme = 2;
                 match scheme {
                     0 => self.rowwise_adjust_tracker.adjust_window_shape(self.block_tracker[&block_token].shape),
                     1 => self.colwise_reg_adjust_tracker.adjust_window_shape(block_token,
                         self.block_tracker[&block_token].anchor, self.block_tracker[&block_token].shape, &self.block_topo_tracker),
+                    2 => self.colwise_irr_adjust_tracker.adjust_window_shape(self.block_tracker[&block_token].shape),
                     _ => panic!("Invalid adjust scheme: {}", scheme),
                 }
             }
         }
     }
 
-    pub fn collect_pending_psums(&mut self, window_token: usize) {
-        let window_tracker = self.window_tracker.get(&window_token).unwrap();
-        for i in 0..window_tracker.shape[0] {
-            let arow_addr = window_tracker.arow_addr_pairs[i];
-            if arow_addr[0] == usize::MAX {
-                continue;
-            }
-            self.output_tracker
-                .entry(arow_addr[0])
-                .and_modify(|ps| {
-                    if !ps.contains(&arow_addr[1]) {
-                        ps.push(arow_addr[1])
-                    }
-                })
-                .or_insert(vec![arow_addr[1]]);
-        }
-    }
-
     pub fn set_block(&mut self, token: usize, block_anchor: [usize; 2], block_shape: [usize; 2],
         is_merge_block: bool, a_cols_num: Vec<usize>, is_tail: Vec<bool>) {
         let a_ele_num = a_cols_num.iter().sum::<usize>();
+        // Config scheduler a col assigned.
+        for (offset, col_num) in a_cols_num.iter().enumerate() {
+            let rowidx = block_anchor[0] + offset;
+            self.a_cols_assigned[rowidx] += *col_num;
+        }
         // Config block tracker.
         self.block_tracker.insert(
             token,
