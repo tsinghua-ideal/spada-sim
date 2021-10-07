@@ -31,8 +31,10 @@ impl BlockTopoTracker {
         if col_pos < 0 {
             return None;
         } else {
-            return Some((self.token_list[row_pos][col_pos as usize],
-                [cur_block[1], self.col_s_list[row_pos][col_pos as usize]]));
+            return Some((
+                self.token_list[row_pos][col_pos as usize],
+                [cur_block[1], self.col_s_list[row_pos][col_pos as usize]],
+            ));
         }
     }
 
@@ -48,19 +50,25 @@ impl BlockTopoTracker {
         let row_pos = row_pos as usize;
 
         match self.col_s_list[row_pos].binary_search(&cur_block[1]) {
-            Ok(c) => Some((self.token_list[row_pos][c],
-                [self.row_s_list[row_pos], self.col_s_list[row_pos][c]])),
+            Ok(c) => Some((
+                self.token_list[row_pos][c],
+                [self.row_s_list[row_pos], self.col_s_list[row_pos][c]],
+            )),
             Err(c) => {
                 let c_l = max(c - 1, 0);
                 let c_r = min(c + 1, self.col_s_list[row_pos].len() - 1);
                 if (cur_block[1] as i64 - self.col_s_list[row_pos][c_l] as i64).abs()
                     >= (self.col_s_list[row_pos][c_r] as i64 - cur_block[1] as i64).abs()
                 {
-                    return Some((self.token_list[row_pos][c_r],
-                        [self.row_s_list[row_pos], self.col_s_list[row_pos][c_r]]));
+                    return Some((
+                        self.token_list[row_pos][c_r],
+                        [self.row_s_list[row_pos], self.col_s_list[row_pos][c_r]],
+                    ));
                 } else {
-                    return Some((self.token_list[row_pos][c_l],
-                        [self.row_s_list[row_pos], self.col_s_list[row_pos][c_l]]));
+                    return Some((
+                        self.token_list[row_pos][c_l],
+                        [self.row_s_list[row_pos], self.col_s_list[row_pos][c_l]],
+                    ));
                 }
             }
         }
@@ -72,13 +80,7 @@ impl BlockTopoTracker {
             self.col_s_list.push(vec![]);
             self.token_list.push(vec![]);
         }
-        self.col_s_list
-            .last_mut()
-            .unwrap()
-            .push(anchor[1]);
-        self.token_list
-            .last_mut()
-            .unwrap()
-            .push(token);
+        self.col_s_list.last_mut().unwrap().push(anchor[1]);
+        self.token_list.last_mut().unwrap().push(token);
     }
 }

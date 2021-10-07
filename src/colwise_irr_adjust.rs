@@ -1,10 +1,10 @@
-use std::cmp::{max, min};
-use std::collections::{HashMap};
-use crate::colwise_reg_adjust::ColwiseRegBlockAdjustTracker;
-use crate::storage::{CsrMatStorage};
-use crate::{trace_println};
 use crate::block_topo_tracker::BlockTopoTracker;
+use crate::colwise_reg_adjust::ColwiseRegBlockAdjustTracker;
 use crate::scheduler::BlockTracker;
+use crate::storage::CsrMatStorage;
+use crate::trace_println;
+use std::cmp::{max, min};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ColwiseIrrBlockInfo {
@@ -33,7 +33,11 @@ pub struct ColwiseIrrBlockAdjustTracker {
 }
 
 impl ColwiseIrrBlockAdjustTracker {
-    pub fn new(lane_num: usize, group_size: usize, block_width: usize) -> ColwiseIrrBlockAdjustTracker {
+    pub fn new(
+        lane_num: usize,
+        group_size: usize,
+        block_width: usize,
+    ) -> ColwiseIrrBlockAdjustTracker {
         ColwiseIrrBlockAdjustTracker {
             block_info: HashMap::new(),
             lane_num,
@@ -44,8 +48,13 @@ impl ColwiseIrrBlockAdjustTracker {
         }
     }
 
-    pub fn adjust_block_shape(&mut self, row_s: usize, col_s: usize, a_row_num: usize,
-        block_topo: &BlockTopoTracker) -> [usize; 2] {
+    pub fn adjust_block_shape(
+        &mut self,
+        row_s: usize,
+        col_s: usize,
+        a_row_num: usize,
+        block_topo: &BlockTopoTracker,
+    ) -> [usize; 2] {
         // Irregular colwise block adjust scheme allows irregular block size.
         // Irregular colwise block adjust only adjust on the top blocks shape
         // and only in a degraded way.
@@ -58,7 +67,8 @@ impl ColwiseIrrBlockAdjustTracker {
                 }
                 let block_shape = [blk_h, self.block_width];
                 self.block_shape.insert([row_s, col_s], block_shape);
-                self.group_shape.insert(row_s / self.group_size, block_shape);
+                self.group_shape
+                    .insert(row_s / self.group_size, block_shape);
                 return block_shape;
             }
             let (n1_token, n1_block) = n1_tk_acr.unwrap();
@@ -70,19 +80,20 @@ impl ColwiseIrrBlockAdjustTracker {
                 }
                 let block_shape = [blk_h, self.block_width];
                 self.block_shape.insert([row_s, col_s], block_shape);
-                self.group_shape.insert(row_s / self.group_size, block_shape);
+                self.group_shape
+                    .insert(row_s / self.group_size, block_shape);
                 return block_shape;
             }
             let (n2_token, _) = n2_tk_acr.unwrap();
             let n1_block_info = self.block_info.get(&n1_token).unwrap();
             let n1_ele_size = n1_block_info.a_ele_num;
-            let n1_cost =(n1_block_info.miss_size +
-                n1_block_info.psum_rw_size[0]) * 100 + n1_block_info.psum_rw_size[1];
+            let n1_cost = (n1_block_info.miss_size + n1_block_info.psum_rw_size[0]) * 100
+                + n1_block_info.psum_rw_size[1];
             let n1_blk_h = self.block_shape[&n1_block][0];
             let n2_block_info = self.block_info.get(&n2_token).unwrap();
             let n2_ele_size = n2_block_info.a_ele_num;
-            let n2_cost = (n2_block_info.miss_size +
-                n2_block_info.psum_rw_size[0]) * 100 + n2_block_info.psum_rw_size[1];
+            let n2_cost = (n2_block_info.miss_size + n2_block_info.psum_rw_size[0]) * 100
+                + n2_block_info.psum_rw_size[1];
 
             trace_println!(
                 "block anchor: {:?} n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
@@ -93,19 +104,20 @@ impl ColwiseIrrBlockAdjustTracker {
                 n2_ele_size
             );
 
-            let mut blk_h = if (n1_cost as f32 / n1_ele_size as f32)
-                < (n2_cost as f32 / n2_ele_size as f32) {
-                max(1, n1_blk_h / 2)
-            } else {
-                n1_blk_h
-            };
+            let mut blk_h =
+                if (n1_cost as f32 / n1_ele_size as f32) < (n2_cost as f32 / n2_ele_size as f32) {
+                    max(1, n1_blk_h / 2)
+                } else {
+                    n1_blk_h
+                };
             while row_s + blk_h > a_row_num {
                 blk_h = max(1, blk_h / 2);
             }
             let block_shape = [blk_h, self.lane_num / blk_h];
             self.block_shape.insert([row_s, col_s], block_shape);
-            self.group_shape.insert(row_s / self.group_size, block_shape);
-            return block_shape
+            self.group_shape
+                .insert(row_s / self.group_size, block_shape);
+            return block_shape;
         } else {
             return self.group_shape[&(row_s / self.group_size)];
         }

@@ -2,32 +2,27 @@
 #![feature(hash_drain_filter)]
 
 mod b_reuse_counter;
+mod block_topo_tracker;
+mod colwise_irr_adjust;
+mod colwise_reg_adjust;
+mod cycle_accurate_simulator;
 mod frontend;
 mod gemm;
-mod oracle_storage_traffic_model;
-mod pipeline_simu;
-mod pqcache_omega_simulator;
-mod pqcache_storage_traffic_model;
 mod preprocessing;
 mod py2rust;
+mod rowwise_adjust;
 mod scheduler;
 mod storage;
 mod storage_traffic_model;
 mod util;
-mod block_topo_tracker;
-mod rowwise_adjust;
-mod colwise_reg_adjust;
-mod colwise_irr_adjust;
 
 use std::cmp::min;
 
 use gemm::GEMM;
 use storage::VectorStorage;
-use storage_traffic_model::TrafficModel;
 
+use crate::cycle_accurate_simulator::CycleAccurateSimulator;
 use crate::frontend::{parse_config, Accelerator, Cli, Simulator, WorkloadCate};
-use crate::pipeline_simu::PipelineSimulator;
-use crate::pqcache_omega_simulator::CycleAccurateSimulator;
 use crate::preprocessing::{affinity_based_row_reordering, sort_by_length};
 use crate::py2rust::{load_mm_mat, load_pickled_gemms};
 use crate::storage::CsrMatStorage;
@@ -146,7 +141,7 @@ fn main() {
             //         oracle_exec,
             // );
 
-            let mut traffic_model = pqcache_storage_traffic_model::TrafficModel::new(
+            let mut traffic_model = storage_traffic_model::TrafficModel::new(
                 omega_config.pe_num,
                 omega_config.lane_num,
                 omega_config.cache_size,
@@ -305,10 +300,6 @@ fn main() {
 
         Simulator::AccurateSimu => {
             // Cycle-accurate simulator.
-            // TODO: Write the blocking mechanism.
-            // TODO: Initialize the StreamBuffer component.
-            // let mut omega = PipelineSimulator::new();
-            // TODO: Add StreamBuffer to omega.
             let (mut dram_a, mut dram_b) = CsrMatStorage::init_with_gemm(gemm);
             let mut dram_psum = VectorStorage::new();
 

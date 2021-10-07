@@ -1,8 +1,14 @@
-use std::{cmp::{max, min}, collections::VecDeque};
 use crate::frontend::Accelerator;
 use crate::scheduler::{Scheduler, Task};
-use crate::storage::{sorted_element_vec_to_csr_row, CsrMatStorage, CsrRow, Element, LatencyPriorityCache, VectorStorage};
+use crate::storage::{
+    sorted_element_vec_to_csr_row, CsrMatStorage, CsrRow, Element, LatencyPriorityCache,
+    VectorStorage,
+};
 use crate::{trace_print, trace_println};
+use std::{
+    cmp::{max, min},
+    collections::VecDeque,
+};
 
 #[derive(Debug, Clone)]
 pub struct Multiplier {
@@ -471,7 +477,9 @@ impl<'a> CycleAccurateSimulator<'a> {
                     && self.pes[pe_idx].idle()
                 {
                     // Collect stats of the prev finished task.
-                    if self.pes[pe_idx].task.is_some() && !self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
+                    if self.pes[pe_idx].task.is_some()
+                        && !self.pes[pe_idx].task.as_ref().unwrap().merge_mode
+                    {
                         let prev_blk_tk = self.pes[pe_idx].task.as_ref().unwrap().block_token;
                         if self.scheduler.is_block_finished(prev_blk_tk) {
                             // Label finished rows.
@@ -480,7 +488,9 @@ impl<'a> CycleAccurateSimulator<'a> {
                                 Accelerator::NewOmega => {
                                     // Update the rowwise adjust tracker.
                                     let block_tracker = &self.scheduler.block_tracker[&prev_blk_tk];
-                                    self.scheduler.rowwise_adjust_tracker.update_group_cost(block_tracker);
+                                    self.scheduler
+                                        .rowwise_adjust_tracker
+                                        .update_group_cost(block_tracker);
                                 }
                                 _ => {}
                             }
@@ -609,8 +619,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                         + self.fiber_cache.psum_mem.write_count
                         - prev_psum_rs[pe_idx]
                         - prev_psum_ws[pe_idx];
-                    let delta_cache = self.fiber_cache.read_count
-                        + self.fiber_cache.write_count
+                    let delta_cache = self.fiber_cache.read_count + self.fiber_cache.write_count
                         - prev_cache_rs[pe_idx]
                         - prev_cache_ws[pe_idx];
                     // Update block tracker.
@@ -673,7 +682,12 @@ impl<'a> CycleAccurateSimulator<'a> {
         }
     }
 
-    pub fn stream_b_row(&mut self, pe_idx: usize, lane_idx: usize, rb_num: usize) -> (usize, Vec<Element>) {
+    pub fn stream_b_row(
+        &mut self,
+        pe_idx: usize,
+        lane_idx: usize,
+        rb_num: usize,
+    ) -> (usize, Vec<Element>) {
         if self.pes[pe_idx].task.is_none() {
             return (0, vec![]);
         }
@@ -716,14 +730,18 @@ impl<'a> CycleAccurateSimulator<'a> {
             return;
         }
         let task = self.pes[pe_idx].task.as_ref().unwrap();
-        
+
         // Write psums to cache.
         for (gidx, ps) in psums.into_iter().enumerate() {
             if ps.len() == 0 {
                 continue;
             }
             let mut csrrow = sorted_element_vec_to_csr_row(ps);
-            let window_tracker = self.scheduler.window_tracker.get(&task.window_token).unwrap();
+            let window_tracker = self
+                .scheduler
+                .window_tracker
+                .get(&task.window_token)
+                .unwrap();
             let arow_addr = window_tracker.arow_addr_pairs[gidx];
             // Assign the output address.
             csrrow.rowptr = arow_addr[1];
@@ -828,7 +846,13 @@ impl<'a> CycleAccurateSimulator<'a> {
         return c;
     }
 
-    pub fn update_adjust_tracker(&mut self, block_token: usize, delta_b: usize, delta_psum: usize, delta_cache: usize) {
+    pub fn update_adjust_tracker(
+        &mut self,
+        block_token: usize,
+        delta_b: usize,
+        delta_psum: usize,
+        delta_cache: usize,
+    ) {
         // Rowwise adjust tracker.
         let rowwise_tracker = self
             .scheduler

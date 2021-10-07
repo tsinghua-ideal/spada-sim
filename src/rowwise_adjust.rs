@@ -1,9 +1,9 @@
-use std::cmp::{max, min};
-use std::collections::{HashMap};
-use crate::storage::{CsrMatStorage};
-use crate::{trace_println};
 use crate::block_topo_tracker::BlockTopoTracker;
 use crate::scheduler::BlockTracker;
+use crate::storage::CsrMatStorage;
+use crate::trace_println;
+use std::cmp::{max, min};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct GroupInfo {
@@ -100,13 +100,17 @@ pub struct RowwiseAdjustTracker {
     pub b_group: GroupTracker,
     pub row_group: usize,
     pub sampling_bounds: Vec<usize>,
-    pub set_row_num:usize,
+    pub set_row_num: usize,
     pub lane_num: usize,
 }
 
 impl RowwiseAdjustTracker {
-    pub fn new(lane_num: usize, a_matrix: &CsrMatStorage, b_matrix: &CsrMatStorage, var_factor: f32)
-        -> RowwiseAdjustTracker {
+    pub fn new(
+        lane_num: usize,
+        a_matrix: &CsrMatStorage,
+        b_matrix: &CsrMatStorage,
+        var_factor: f32,
+    ) -> RowwiseAdjustTracker {
         RowwiseAdjustTracker {
             block_info: HashMap::new(),
             a_group: parse_group(a_matrix, var_factor),
@@ -118,9 +122,14 @@ impl RowwiseAdjustTracker {
         }
     }
 
-    pub fn adjust_block_shape(&mut self, prev_blk_anchor: [usize; 2], row_s: usize,
-        block_shape: [usize; 2], block_topo: &BlockTopoTracker,
-        a_row_lens: &Vec<usize>) -> [usize; 2] {
+    pub fn adjust_block_shape(
+        &mut self,
+        prev_blk_anchor: [usize; 2],
+        row_s: usize,
+        block_shape: [usize; 2],
+        block_topo: &BlockTopoTracker,
+        a_row_lens: &Vec<usize>,
+    ) -> [usize; 2] {
         let mut block_shape = block_shape;
         trace_println!("-Rowwise adjust");
         // Separately treat wide groups and narrow groups.
@@ -128,7 +137,11 @@ impl RowwiseAdjustTracker {
         let sample_num = 4;
         let mut min_row_num = 1;
 
-        trace_println!("rgmap: {} cur_group: {}", self.a_group.rgmap[&row_s], self.row_group);
+        trace_println!(
+            "rgmap: {} cur_group: {}",
+            self.a_group.rgmap[&row_s],
+            self.row_group
+        );
 
         // First check if the row group changed and prepare for sampling.
         if self.a_group.rgmap[&row_s] != self.row_group {
@@ -180,8 +193,7 @@ impl RowwiseAdjustTracker {
                         cur_row_num *= 2;
                     }
                     while cur_row_num > 1
-                        && (row_s + cur_row_num
-                            >= self.a_group.groups[self.row_group].row_range[1])
+                        && (row_s + cur_row_num >= self.a_group.groups[self.row_group].row_range[1])
                     {
                         cur_row_num /= 2;
                     }
@@ -257,8 +269,7 @@ impl RowwiseAdjustTracker {
             }
 
             while block_shape[0] > 1
-                && (row_s + block_shape[0]
-                    >= self.a_group.groups[self.row_group].row_range[1])
+                && (row_s + block_shape[0] >= self.a_group.groups[self.row_group].row_range[1])
             {
                 block_shape[0] /= 2;
             }
@@ -272,19 +283,17 @@ impl RowwiseAdjustTracker {
         let row_num = block_tracker.shape[0];
         let grp_idx = self.a_group.rgmap[&blk_row_s];
         let block_info = self.block_info.get(&block_tracker.token).unwrap();
-        let cost = (block_info.miss_size
-            + block_info.psum_rw_size[0])
-            * 100
-            + block_info.psum_rw_size[1];
+        let cost =
+            (block_info.miss_size + block_info.psum_rw_size[0]) * 100 + block_info.psum_rw_size[1];
         let ele_size = block_tracker.a_cols_num.iter().sum();
         self.a_group.groups[grp_idx]
-        .cost_num
-        .entry(row_num)
-        .and_modify(|e| {
-            e[0] += cost;
-            e[1] += ele_size;
-        })
-        .or_insert([cost, ele_size]);
+            .cost_num
+            .entry(row_num)
+            .and_modify(|e| {
+                e[0] += cost;
+                e[1] += ele_size;
+            })
+            .or_insert([cost, ele_size]);
     }
 
     pub fn adjust_window_shape(&mut self, block_shape: [usize; 2]) -> [usize; 2] {

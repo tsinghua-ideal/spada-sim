@@ -383,7 +383,7 @@ impl CsrMatStorage {
                 row_idx
             )));
         } else if num == 0 {
-            return Ok(vec!());
+            return Ok(vec![]);
         }
 
         let row_idx = if self.remapped {
@@ -2010,7 +2010,6 @@ impl<'a> PriorityCache<'a> {
     }
 }
 
-
 pub struct LatencyPriorityCache<'a> {
     pub cache_size: usize,
     pub word_byte: usize,
@@ -2435,8 +2434,10 @@ impl<'a> LatencyPriorityCache<'a> {
                         self.write(csrrow.clone(), a_loc);
                         let elements = csrrow.as_element_vec();
                         let b_latency = self.mem_latency + self.cache_latency;
-                        return Some((b_latency,
-                            elements[col_s..min(col_s + num, elements.len())].to_vec()));
+                        return Some((
+                            b_latency,
+                            elements[col_s..min(col_s + num, elements.len())].to_vec(),
+                        ));
                     }
                     Err(_) => return None,
                 }
@@ -2449,8 +2450,10 @@ impl<'a> LatencyPriorityCache<'a> {
                         self.write(csrrow.clone(), a_loc);
                         let elements = csrrow.as_element_vec();
                         let b_latency = self.mem_latency + self.cache_latency;
-                        return Some((b_latency,
-                            elements[col_s..min(col_s + num, elements.len())].to_vec()));
+                        return Some((
+                            b_latency,
+                            elements[col_s..min(col_s + num, elements.len())].to_vec(),
+                        ));
                     }
                     Err(_) => return None,
                 }
@@ -2572,4 +2575,3 @@ impl<'a> LatencyPriorityCache<'a> {
         }
     }
 }
-
