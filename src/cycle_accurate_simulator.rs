@@ -519,7 +519,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                         for c_offset in 0..window_tracker.shape[1] {
                             let lane_pos = r_offset * window_tracker.shape[1] + c_offset;
                             match window_tracker.lane2idx[lane_pos] {
-                                None => trace_print!("{:?} None  ", lane_pos),
+                                None => {trace_print!("{:?} None  ", lane_pos);},
                                 Some(idx) => {
                                     let rlen = self.scheduler.b_row_lens[&idx[1]];
                                     trace_print!(
