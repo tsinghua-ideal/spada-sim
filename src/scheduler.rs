@@ -2,7 +2,7 @@ use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 
 use crate::block_topo_tracker::BlockTopoTracker;
-use crate::colwise_irr_adjust::{ColwiseIrrBlockAdjustTracker, ColwiseIrrBlockInfo};
+use crate::colwise_irr_adjust::{self, ColwiseIrrBlockAdjustTracker, ColwiseIrrBlockInfo};
 use crate::colwise_reg_adjust::{ColwiseRegBlockAdjustTracker, ColwiseRegBlockInfo};
 use crate::cycle_accurate_simulator::PE;
 use crate::frontend::Accelerator;
@@ -288,7 +288,7 @@ impl Scheduler {
                 self.row_s = 0;
                 self.col_s = 0;
                 if let Accelerator::NewOmega = self.accelerator {
-                    self.adjust_block([self.row_s, self.col_s]);
+                    self.adjust_block_row([self.row_s, self.col_s]);
                 }
                 // Get block stats.
                 let token = self.block_token.tik();
@@ -324,6 +324,8 @@ impl Scheduler {
             }
             // Prefer to allocate along K dim.
             else if !self.is_block_valid([self.row_s, self.col_s], self.block_shape) {
+                // Adjust block across cols.
+                self.adjust_block_col([self.row_s, self.col_s]);
                 // Get block stats.
                 let token = self.block_token.tik();
                 let a_cols_num = (0..self.block_shape[0])
@@ -353,9 +355,10 @@ impl Scheduler {
                 return Some(token);
             } else {
                 self.row_s += self.block_shape[0];
-                self.col_s = 0;
+                self.col_s = self.a_cols_assigned[self.row_s];
+                // Adjust block across rows.
                 if self.row_s < self.a_row_num {
-                    self.adjust_block([self.row_s, self.col_s]);
+                    self.adjust_block_row([self.row_s, self.col_s]);
                 }
             }
         }
@@ -632,7 +635,7 @@ impl Scheduler {
         return true;
     }
 
-    pub fn adjust_block(&mut self, block_anchor: [usize; 2]) {
+    pub fn adjust_block_row(&mut self, block_anchor: [usize; 2]) {
         match self.accelerator {
             Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
                 return;
@@ -650,9 +653,35 @@ impl Scheduler {
                     1 => self
                         .colwise_reg_adjust_tracker
                         .adjust_block_shape(self.row_s, self.a_row_num),
+                    2 => {
+                        if block_anchor == [0; 2] {
+                            self.colwise_irr_adjust_tracker.adjust_block_shape(
+                                block_anchor,
+                                self.a_row_num,
+                                &&self.block_topo_tracker,
+                            )
+                        } else {
+                            self.block_shape
+                        }
+                    }
+                    _ => panic!("Invalid merge scheme: {}", scheme),
+                }
+            }
+        }
+    }
+
+    pub fn adjust_block_col(&mut self, block_anchor: [usize; 2]) {
+        match self.accelerator {
+            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
+                return;
+            }
+            Accelerator::NewOmega => {
+                let scheme = 2;
+                self.block_shape = match scheme {
+                    0 => self.block_shape,
+                    1 => self.block_shape,
                     2 => self.colwise_irr_adjust_tracker.adjust_block_shape(
-                        self.row_s,
-                        self.col_s,
+                        block_anchor,
                         self.a_row_num,
                         &&self.block_topo_tracker,
                     ),
@@ -722,6 +751,9 @@ impl Scheduler {
         self.colwise_reg_adjust_tracker
             .block_info
             .insert(token, ColwiseRegBlockInfo::new(a_ele_num));
+        self.colwise_irr_adjust_tracker
+            .block_info
+            .insert(token, ColwiseIrrBlockInfo::new(a_ele_num));
         // Config block topo tracker.
         self.block_topo_tracker.add_block(token, block_anchor);
     }

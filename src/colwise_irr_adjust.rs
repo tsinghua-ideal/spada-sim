@@ -50,38 +50,37 @@ impl ColwiseIrrBlockAdjustTracker {
 
     pub fn adjust_block_shape(
         &mut self,
-        row_s: usize,
-        col_s: usize,
+        block_anchor: [usize; 2],
         a_row_num: usize,
         block_topo: &BlockTopoTracker,
     ) -> [usize; 2] {
         // Irregular colwise block adjust scheme allows irregular block size.
         // Irregular colwise block adjust only adjust on the top blocks shape
         // and only in a degraded way.
-        if row_s % self.group_size == 0 {
-            let n1_tk_acr = block_topo.find_left([row_s, col_s]);
+        if block_anchor[0] % self.group_size == 0 {
+            let n1_tk_acr = block_topo.find_left(block_anchor);
             if n1_tk_acr.is_none() {
                 let mut blk_h = self.lane_num;
-                while row_s + blk_h > a_row_num {
+                while block_anchor[0] + blk_h > a_row_num {
                     blk_h = max(1, blk_h / 2);
                 }
                 let block_shape = [blk_h, self.block_width];
-                self.block_shape.insert([row_s, col_s], block_shape);
+                self.block_shape.insert(block_anchor, block_shape);
                 self.group_shape
-                    .insert(row_s / self.group_size, block_shape);
+                    .insert(block_anchor[0] / self.group_size, block_shape);
                 return block_shape;
             }
             let (n1_token, n1_block) = n1_tk_acr.unwrap();
             let n2_tk_acr = block_topo.find_left(n1_block);
             if n2_tk_acr.is_none() {
                 let mut blk_h = self.lane_num / 2;
-                while row_s + blk_h > a_row_num {
+                while block_anchor[0] + blk_h > a_row_num {
                     blk_h = max(1, blk_h / 2);
                 }
                 let block_shape = [blk_h, self.block_width];
-                self.block_shape.insert([row_s, col_s], block_shape);
+                self.block_shape.insert(block_anchor, block_shape);
                 self.group_shape
-                    .insert(row_s / self.group_size, block_shape);
+                    .insert(block_anchor[0] / self.group_size, block_shape);
                 return block_shape;
             }
             let (n2_token, _) = n2_tk_acr.unwrap();
@@ -97,7 +96,7 @@ impl ColwiseIrrBlockAdjustTracker {
 
             trace_println!(
                 "block anchor: {:?} n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
-                &[row_s, col_s],
+                &block_anchor,
                 n1_cost,
                 n1_ele_size,
                 n2_cost,
@@ -110,16 +109,16 @@ impl ColwiseIrrBlockAdjustTracker {
                 } else {
                     n1_blk_h
                 };
-            while row_s + blk_h > a_row_num {
+            while block_anchor[0] + blk_h > a_row_num {
                 blk_h = max(1, blk_h / 2);
             }
-            let block_shape = [blk_h, self.lane_num / blk_h];
-            self.block_shape.insert([row_s, col_s], block_shape);
+            let block_shape = [blk_h, self.block_width];
+            self.block_shape.insert(block_anchor, block_shape);
             self.group_shape
-                .insert(row_s / self.group_size, block_shape);
+                .insert(block_anchor[0] / self.group_size, block_shape);
             return block_shape;
         } else {
-            return self.group_shape[&(row_s / self.group_size)];
+            return self.group_shape[&(block_anchor[0] / self.group_size)];
         }
     }
 
