@@ -355,10 +355,12 @@ impl Scheduler {
                 return Some(token);
             } else {
                 self.row_s += self.block_shape[0];
-                self.col_s = self.a_cols_assigned[self.row_s];
                 // Adjust block across rows.
                 if self.row_s < self.a_row_num {
+                    self.col_s = self.a_cols_assigned[self.row_s];
                     self.adjust_block_row([self.row_s, self.col_s]);
+                } else {
+                    self.col_s = 0;
                 }
             }
         }
@@ -641,7 +643,7 @@ impl Scheduler {
                 return;
             }
             Accelerator::NewOmega => {
-                let scheme = 2;
+                let scheme = 0;
                 self.block_shape = match scheme {
                     0 => self.rowwise_adjust_tracker.adjust_block_shape(
                         block_anchor,
