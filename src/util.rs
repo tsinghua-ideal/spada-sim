@@ -24,6 +24,12 @@ macro_rules! trace_print {
     ($( $args:expr ),*) => {};
 }
 
+#[cfg(not(feature = "trace_exec"))]
+#[macro_export]
+macro_rules! trace_println {
+    ($( $args:expr ),*) => {};
+}
+
 pub fn gen_rands_from_range(low: usize, high: usize, num: usize) -> Vec<usize> {
     let mut rng = rand::thread_rng();
     let r = Uniform::new(low, high);
