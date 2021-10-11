@@ -1631,7 +1631,7 @@ impl<'a> PriorityCache<'a> {
             let mut popid: [usize; 2];
             loop {
                 popid = self.priority_queue_pop().unwrap();
-                trace_println!("freeup_space: popid: {:?}", popid);
+                trace_println!("freeup_space: popid: {:?} from {:?}", popid, self.rowmap.keys());
                 if self.valid_pq_row_dict[&popid[1]] == popid[0]
                     && self.rowmap.contains_key(&popid[1])
                 {
@@ -2165,21 +2165,21 @@ impl<'a> LatencyPriorityCache<'a> {
 
     pub fn write(&mut self, csrrow: CsrRow, a_loc: [usize; 2]) {
         let row_size = csrrow.size();
+        // Freeup space first if necessary.
+        if self.cur_num + row_size <= self.capability {
+            self.cur_num += row_size;
+        } else {
+            if let Err(err) = self.freeup_space(csrrow.rowptr, row_size) {
+                panic!("{}", err);
+            }
+            self.cur_num += row_size;
+        }
+
         // println!("*cache write invoked with count {} row {}", self.write_count, row_size);
         if self.is_psum_row(csrrow.rowptr) {
             self.psum_occp += row_size;
         } else {
             self.b_occp += row_size;
-        }
-
-        // Freeup space first if necessary.
-        if self.cur_num + row_size <= self.capability {
-            self.cur_num += row_size;
-        } else {
-            if let Err(err) = self.freeup_space(row_size) {
-                panic!("{}", err);
-            }
-            self.cur_num += row_size;
         }
 
         // Track snapshot.
@@ -2208,26 +2208,31 @@ impl<'a> LatencyPriorityCache<'a> {
         self.rowmap_insert(a_loc[1], csrrow);
     }
 
-    pub fn freeup_space(&mut self, space_required: usize) -> Result<(), String> {
+    pub fn freeup_space(&mut self, addr: usize, space_required: usize) -> Result<(), String> {
         while self.priority_queue.len() > 0 && (self.cur_num + space_required > self.capability) {
             trace_println!(
-                "freeup_space: cur_num: {} space_required: {}",
-                self.cur_num,
-                space_required
+                "freeup_space: space_required: {} by {}",
+                space_required,
+                addr
             );
-            let mut popid: [usize; 2];
-            loop {
-                popid = self.priority_queue_pop().unwrap();
-                trace_println!("freeup_space: popid: {:?}", popid);
-                if self.valid_pq_row_dict[&popid[1]] == popid[0]
-                    && self.rowmap.contains_key(&popid[1])
-                {
-                    break;
+            let poprow: usize;
+            if self.b_occp < space_required {
+                poprow = *self.rowmap.keys().filter(|&&rowid| self.is_psum_row(rowid)).next().unwrap();
+            } else {
+                loop {
+                    let popid = self.priority_queue_pop().unwrap();
+                    trace_println!("freeup_space: popid: {:?}", popid);
+                    if self.valid_pq_row_dict[&popid[1]] == popid[0]
+                        && self.rowmap.contains_key(&popid[1])
+                    {
+                        poprow = popid[1];
+                        break;
+                    }
                 }
             }
-            if self.is_psum_row(popid[1]) {
-                let popped_csrrow = self.rowmap_remove(&popid[1]).unwrap();
-                trace_println!("*freerow {:?} and get {}", popid, popped_csrrow.size());
+            if self.is_psum_row(poprow) {
+                let popped_csrrow = self.rowmap_remove(&poprow).unwrap();
+                trace_println!("*freerow {:?} and get {}", poprow, popped_csrrow.size());
                 self.cur_num -= popped_csrrow.size();
                 if self.track_count {
                     self.psum_evict_count += popped_csrrow.size();
@@ -2235,8 +2240,8 @@ impl<'a> LatencyPriorityCache<'a> {
                 self.psum_occp -= popped_csrrow.size();
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
-                let evict_size = self.rowmap_remove(&popid[1]).unwrap().size();
-                trace_println!("*freerow {:?} and get {}", popid, evict_size);
+                let evict_size = self.rowmap_remove(&poprow).unwrap().size();
+                trace_println!("*freerow {:?} and get {}", poprow, evict_size);
                 self.cur_num -= evict_size;
                 self.b_occp -= evict_size;
                 if self.track_count {
@@ -2473,7 +2478,7 @@ impl<'a> LatencyPriorityCache<'a> {
         if self.cur_num + row_size <= self.capability {
             self.cur_num += row_size;
         } else {
-            if let Err(err) = self.freeup_space(row_size) {
+            if let Err(err) = self.freeup_space(addr, row_size) {
                 panic!("{}", err);
             }
             self.cur_num += row_size;
