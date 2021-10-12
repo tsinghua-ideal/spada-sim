@@ -88,7 +88,7 @@ impl CsrRow {
             csrrow.rowptr
         );
         self.data.extend(csrrow.data.iter());
-        self.indptr.extend(&mut csrrow.indptr.iter());
+        self.indptr.extend(csrrow.indptr.iter());
     }
 }
 
@@ -575,6 +575,13 @@ impl VectorStorage {
                 )))
             }
         }
+    }
+
+    pub fn contains_row(
+        &self,
+        row_idx: &usize,
+    ) -> bool {
+        self.data.contains_key(row_idx)
     }
 }
 
@@ -2030,8 +2037,10 @@ pub struct LatencyPriorityCache<'a> {
     pub psum_occp: usize,
     pub track_count: bool,
     snapshot: Option<PriorityCacheSnapshot>,
+    // Latency related.
     pub mem_latency: usize,
     pub cache_latency: usize,
+    pub pending_request: HashMap<[usize; 2], usize>, // addr -> finish cycle
 }
 
 impl<'a> Snapshotable for LatencyPriorityCache<'a> {
@@ -2135,6 +2144,7 @@ impl<'a> LatencyPriorityCache<'a> {
             snapshot: None,
             mem_latency,
             cache_latency,
+            pending_request: HashMap::new(),
         }
     }
 
@@ -2159,8 +2169,22 @@ impl<'a> LatencyPriorityCache<'a> {
         self.priority_queue.push(Reverse(a_loc));
     }
 
-    fn priority_queue_pop(&mut self) -> Option<[usize; 2]> {
-        self.priority_queue.pop().map(|s| s.0)
+    fn priority_queue_pop(&mut self, pinned_addrs: Vec<usize>) -> Option<[usize; 2]> {
+        let mut popped = vec![];
+        loop {
+            let p = self.priority_queue.pop().map(|s| s.0);
+            popped.push(p);
+            if p.is_none() || !pinned_addrs.contains(&p.unwrap()[1]) {
+                break;
+            }
+        }
+        let result = popped.pop().unwrap();
+        for p in popped {
+            if p.is_some() {
+                self.priority_queue_push(p.unwrap());
+            }
+        }
+        return result;
     }
 
     pub fn write(&mut self, csrrow: CsrRow, a_loc: [usize; 2]) {
@@ -2217,10 +2241,10 @@ impl<'a> LatencyPriorityCache<'a> {
             );
             let poprow: usize;
             if self.b_occp < space_required {
-                poprow = *self.rowmap.keys().filter(|&&rowid| self.is_psum_row(rowid)).next().unwrap();
+                poprow = *self.rowmap.keys().filter(|&&rowid| self.is_psum_row(rowid) && rowid != addr).next().unwrap();
             } else {
                 loop {
-                    let popid = self.priority_queue_pop().unwrap();
+                    let popid = self.priority_queue_pop(vec![addr,]).unwrap();
                     trace_println!("freeup_space: popid: {:?}", popid);
                     if self.valid_pq_row_dict[&popid[1]] == popid[0]
                         && self.rowmap.contains_key(&popid[1])
@@ -2468,27 +2492,31 @@ impl<'a> LatencyPriorityCache<'a> {
 
     pub fn append_psum_to(&mut self, addr: usize, csrrow: CsrRow) {
         let row_size = csrrow.size();
-        if self.is_psum_row(addr) {
-            self.psum_occp += row_size;
-        } else {
-            self.b_occp += row_size;
-        }
 
-        // Freeup space first if necessary.
-        if self.cur_num + row_size <= self.capability {
-            self.cur_num += row_size;
-        } else {
-            if let Err(err) = self.freeup_space(addr, row_size) {
-                panic!("{}", err);
-            }
-            self.cur_num += row_size;
-        }
 
         // If the same addr psum is in the cache, append to current one.
         if self.rowmap.contains_key(&addr) {
-            let mut psum = self.rowmap.get_mut(&addr).unwrap();
+            // Update occp.
+            self.freeup_space(addr, row_size).unwrap();
+            self.cur_num += row_size;
+            if self.is_psum_row(addr) {
+                self.psum_occp += row_size;
+            } else {
+                self.b_occp += row_size;
+            }
+            // Update write count.
+            if self.track_count {
+                self.write_count += row_size;
+            }
+            // Update data.
+            let psum = self.rowmap.get_mut(&addr).unwrap();
             psum.append(csrrow);
-        // Otherwise direct write the partial psum into cache.
+
+        // If swapped out, direct write the partial psum into psum memory.
+        } else if self.psum_mem.contains_row(&addr) {
+            self.psum_mem.write(&mut vec![csrrow,]).unwrap();
+
+        // Otherwise, alloc in cache.
         } else {
             // Track snapshot.
             if let Some(ref mut snp) = self.snapshot {
@@ -2507,12 +2535,20 @@ impl<'a> LatencyPriorityCache<'a> {
                 .and_modify(|x| *x = max(*x, addr))
                 .or_insert(addr);
             self.priority_queue_push([self.valid_pq_row_dict[&addr], addr]);
-
+            // Update occp.
+            self.freeup_space(addr, row_size).unwrap();
+            self.cur_num += row_size;
+            if self.is_psum_row(addr) {
+                self.psum_occp += row_size;
+            } else {
+                self.b_occp += row_size;
+            }
+            // Update write_count.
+            if self.track_count {
+                self.write_count += row_size;
+            }
+            // Update data.
             self.rowmap_insert(addr, csrrow);
-        }
-
-        if self.track_count {
-            self.write_count += row_size;
         }
     }
 
@@ -2575,6 +2611,214 @@ impl<'a> LatencyPriorityCache<'a> {
                         Some((b_latency, eles))
                     }
                     Err(_) => Some((0, vec![])),
+                }
+            }
+        }
+    }
+
+    pub fn request_scalars(
+        &mut self,
+        a_loc: [usize; 2],
+        col_s: usize,
+    ) -> Option<(usize, Vec<Element>)> {
+        if self.rowmap.contains_key(&a_loc[1]) {
+            let elements = self.rowmap.get(&a_loc[1]).unwrap().clone().as_element_vec();
+            let b_latency = if col_s == 0 && elements.len() > 0 {
+                self.cache_latency
+            } else {
+                0
+            };
+            return Some((b_latency, elements));
+        } else {
+            if self.is_psum_row(a_loc[1]) {
+                match self.psum_mem.read_row(a_loc[1]) {
+                    Ok(csrrow) => {
+                        let elements = csrrow.as_element_vec();
+                        let b_latency = self.mem_latency + self.cache_latency;
+                        return Some((
+                            b_latency,
+                            elements.to_vec(),
+                        ));
+                    }
+                    Err(_) => return None,
+                }
+            } else {
+                match self.b_mem.read_row(a_loc[1]) {
+                    Ok(csrrow) => {
+                        let elements = csrrow.as_element_vec();
+                        let b_latency = self.mem_latency + self.cache_latency;
+                        return Some((
+                            b_latency,
+                            elements.to_vec(),
+                        ));
+                    }
+                    Err(_) => return None,
+                }
+            }
+        }
+    }
+
+    pub fn request_read_scalars(
+        &mut self,
+        a_loc: [usize; 2],
+        col_s: usize,
+        num: usize,
+        cur_cycle: usize,
+    ) -> Option<Vec<Element>> {
+        // Pending the request.
+        if !self.pending_request.contains_key(&a_loc) {
+            if self.rowmap.contains_key(&a_loc[1]) {
+                let ele_row = self.rowmap.get(&a_loc[1]).unwrap().len();
+                let b_latency = if col_s == 0 && ele_row > 0 {
+                    self.cache_latency
+                } else {
+                    0
+                };
+                self.pending_request.insert(a_loc, cur_cycle + b_latency);
+            } else {
+                let b_latency = self.mem_latency + self.cache_latency;
+                self.pending_request.insert(a_loc, cur_cycle + b_latency);
+            }
+        }
+        // Process the pending request.
+        if self.pending_request[&a_loc] < cur_cycle {
+            return None;
+        }
+        self.pending_request.remove(&a_loc);
+
+        if self.rowmap.contains_key(&a_loc[1]) {
+            // Track snapshot.
+            if let Some(ref mut snp) = self.snapshot {
+                if !snp.old_pq_row_track.contains_key(&a_loc[1]) {
+                    if self.valid_pq_row_dict.contains_key(&a_loc[1]) {
+                        snp.old_pq_row_track
+                            .insert(a_loc[1], LogItem::Update(self.valid_pq_row_dict[&a_loc[1]]));
+                    } else {
+                        snp.old_pq_row_track.insert(a_loc[1], LogItem::Insert);
+                    }
+                }
+            }
+            // Only update when col_s is 0.
+            if col_s == 0 {
+                self.valid_pq_row_dict
+                    .entry(a_loc[1])
+                    .and_modify(|x| *x = max(*x, a_loc[0]))
+                    .or_insert(a_loc[0]);
+                self.priority_queue_push([self.valid_pq_row_dict[&a_loc[1]], a_loc[1]]);
+            }
+            let elements = self.rowmap.get(&a_loc[1]).unwrap().clone().as_element_vec();
+            let col_t = min(col_s + num, elements.len());
+            let ele_size = (col_t - col_s) * 2;
+            if self.track_count {
+                self.read_count += ele_size;
+            }
+            return Some(elements[col_s..col_t].to_vec());
+        } else {
+            if self.is_psum_row(a_loc[1]) {
+                match self.psum_mem.read_row(a_loc[1]) {
+                    Ok(csrrow) => {
+                        if self.track_count {
+                            self.miss_count += csrrow.size();
+                        }
+                        self.write(csrrow.clone(), a_loc);
+                        let elements = csrrow.as_element_vec();
+                        return Some(
+                            elements[col_s..min(col_s + num, elements.len())].to_vec(),
+                        );
+                    }
+                    Err(_) => panic!("{} should be in psum mem but not found!", a_loc[1]),
+                }
+            } else {
+                match self.b_mem.read_row(a_loc[1]) {
+                    Ok(csrrow) => {
+                        if self.track_count {
+                            self.miss_count += csrrow.size();
+                        }
+                        self.write(csrrow.clone(), a_loc);
+                        let elements = csrrow.as_element_vec();
+                        return Some(
+                            elements[col_s..min(col_s + num, elements.len())].to_vec(),
+                        );
+                    }
+                    Err(_) => panic!("{} should be in b mem but not found!", a_loc[1]),
+                }
+            }
+        }
+    }
+
+    pub fn request_consume_scalars(
+        &mut self,
+        a_loc: [usize; 2],
+        col_s: usize,
+        num: usize,
+        cur_cycle: usize,
+    ) -> Option<Vec<Element>> {
+        // Pending the request.
+        if !self.pending_request.contains_key(&a_loc) {
+            if self.rowmap.contains_key(&a_loc[1]) {
+                let ele_row = self.rowmap.get(&a_loc[1]).unwrap().len();
+                let b_latency = if col_s == 0 && ele_row > 0 {
+                    self.cache_latency
+                } else {
+                    0
+                };
+                self.pending_request.insert(a_loc, cur_cycle + b_latency);
+            } else {
+                let b_latency = self.mem_latency + self.cache_latency;
+                self.pending_request.insert(a_loc, cur_cycle + b_latency);
+            }
+        }
+        // Process the pending request.
+        if self.pending_request[&a_loc] < cur_cycle {
+            return None;
+        }
+        self.pending_request.remove(&a_loc);
+
+        if self.rowmap.contains_key(&a_loc[1]) {
+            // Convert the csrrow to element vector.
+            let elements = self.rowmap.get(&a_loc[1]).unwrap().clone().as_element_vec();
+            // Track the tail of the readout.
+            let col_t = min(col_s + num, elements.len());
+            let ele_size = (col_t - col_s) * 2;
+            let eles = elements[col_s..col_t].to_vec();
+            // Update the counter.
+            if self.track_count {
+                self.read_count += ele_size;
+            }
+            // Update the occupation.
+            self.cur_num -= ele_size;
+            if self.is_psum_row(a_loc[1]) {
+                self.psum_occp -= ele_size;
+            } else {
+                self.b_occp -= ele_size;
+            }
+            // Release the consumed row after traversing it.
+            if col_t == elements.len() {
+                self.rowmap_remove(&a_loc[1]).unwrap();
+            }
+            return Some(eles);
+        } else {
+            if self.is_psum_row(a_loc[1]) {
+                match self.psum_mem.consume_scalars(a_loc[1], col_s, num) {
+                    Ok(eles) => {
+                        if self.track_count {
+                            self.read_count += eles.len() * 2;
+                            self.miss_count += eles.len() * 2;
+                        }
+                        Some(eles)
+                    }
+                    Err(_) => Some(vec![]),
+                }
+            } else {
+                match self.b_mem.read_scalars(a_loc[1], col_s, num) {
+                    Ok(eles) => {
+                        if self.track_count {
+                            self.read_count += eles.len() * 2;
+                            self.miss_count += eles.len() * 2;
+                        }
+                        Some(eles)
+                    }
+                    Err(_) => Some(vec![]),
                 }
             }
         }

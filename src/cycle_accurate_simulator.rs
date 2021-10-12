@@ -15,6 +15,7 @@ pub struct Multiplier {
     a: Option<Element>,
     b: Option<Element>,
     c: Option<Element>,
+    row_drained: bool,
 }
 
 impl Multiplier {
@@ -23,15 +24,28 @@ impl Multiplier {
             a: None,
             b: None,
             c: None,
+            row_drained: false,
         }
     }
 
     pub fn set_a(&mut self, a: Option<Element>) {
+        if a.is_some() {
+            self.row_drained = false;
+        } else {
+            self.row_drained = true;
+        }
         self.a = a;
     }
 
     pub fn set_b(&mut self, b: Option<Element>) {
-        self.b = b;
+        if b.is_none() {
+            self.b = None;
+        } else if b.is_some() && b.as_ref().unwrap().idx == [usize::MAX; 2] {
+            self.row_drained = true;
+            self.b = None;
+        } else {
+            self.b = b;
+        }
     }
 
     pub fn retrieve_c(&mut self) -> Option<Element> {
@@ -75,7 +89,7 @@ impl Multiplier {
     }
 
     pub fn is_empty(&self) -> bool {
-        return self.a.is_none() || self.b.is_none();
+        return self.a.is_none() || self.row_drained;
     }
 }
 
@@ -230,6 +244,7 @@ pub struct PE {
     pub look_aside: bool,
     pub tail_flags: Vec<usize>,
     pub task: Option<Task>,
+    pub sb_drained: Vec<bool>,
 }
 
 impl PE {
@@ -253,6 +268,7 @@ impl PE {
             look_aside: false,
             tail_flags: vec![0; lane_num],
             task: None,
+            sb_drained: vec![true; lane_num],
         }
     }
 
@@ -284,7 +300,7 @@ impl PE {
                     tail_flag = min(tail_flag, self.psum_buffers[lane_idx][2].idx[1]);
                 // Accumulate for enough elements.
                 } else if !self.multipliers[lane_idx].is_empty() {
-                    tail_flag = 0;
+                    tail_flag = min(tail_flag, self.psum_buffers[lane_idx].back().map_or(usize::MAX, |x| x.idx[1]));
                 }
                 // Else the row is all emitted, the tail flag can be set to MAX.
             }
@@ -292,9 +308,17 @@ impl PE {
         }
     }
 
-    pub fn push_stream_buffer(&mut self, lane_idx: usize, elements: Vec<Element>) {
-        for e in elements {
-            self.stream_buffers[lane_idx].push_back(e);
+    pub fn push_stream_buffer(&mut self, lane_idx: usize, elements: Option<Vec<Element>>) {
+        if let Some(es) = elements {
+            for e in es {
+                self.stream_buffers[lane_idx].push_back(e);
+            }
+        } else {
+            if !self.sb_drained[lane_idx] {
+                // trace_println!("push ending label.");
+                self.stream_buffers[lane_idx].push_back(Element::new([usize::MAX; 2], 0.0));
+                self.sb_drained[lane_idx] = true;
+            }
         }
     }
 
@@ -358,6 +382,7 @@ impl PE {
             self.task = Some(task.clone());
             self.sorting_network.group_lane_num = task.group_size;
             for (lane_idx, e) in task.a_eles.into_iter().enumerate() {
+                self.sb_drained[lane_idx] = e.is_none();
                 self.multipliers[lane_idx].set_a(e);
             }
             return a_latency;
@@ -373,7 +398,8 @@ pub struct CycleAccurateSimulator<'a> {
     a_matrix: &'a mut CsrMatStorage,
     exec_cycle: usize,
     scheduler: Scheduler,
-    pub pending_cycle: Vec<usize>,
+    // Storage access latency related.
+    pub a_pending_cycle: Vec<usize>,
 }
 
 impl<'a> CycleAccurateSimulator<'a> {
@@ -436,7 +462,7 @@ impl<'a> CycleAccurateSimulator<'a> {
             ],
             a_matrix,
             exec_cycle: 0,
-            pending_cycle: vec![0; pe_num],
+            a_pending_cycle: vec![0; pe_num],
         }
     }
 
@@ -459,8 +485,8 @@ impl<'a> CycleAccurateSimulator<'a> {
             // Fetch data stage.
             for pe_idx in 0..self.pe_num {
                 // Pending when access a or b matrix.
-                if self.pending_cycle[pe_idx] > 0 {
-                    self.pending_cycle[pe_idx] -= 1;
+                if self.a_pending_cycle[pe_idx] > 0 {
+                    self.a_pending_cycle[pe_idx] -= 1;
                     continue;
                 }
                 // Collect prev exec stats.
@@ -469,6 +495,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                 prev_psum_ws[pe_idx] = self.fiber_cache.psum_mem.write_count;
                 prev_cache_rs[pe_idx] = self.fiber_cache.read_count;
                 prev_cache_ws[pe_idx] = self.fiber_cache.write_count;
+                trace_println!("idle: {}", self.pes[pe_idx].idle());
                 // Assign new jobs if finished or init.
                 if (self.pes[pe_idx].task.is_none()
                     || self
@@ -503,7 +530,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                         .scheduler
                         .assign_task(&mut self.pes[pe_idx], &mut self.a_matrix);
                     let latency = self.pes[pe_idx].set_task(task);
-                    self.pending_cycle[pe_idx] += latency;
+                    self.a_pending_cycle[pe_idx] += latency;
                     trace_println!("---pe {} new task: {:?}", pe_idx, &self.pes[pe_idx].task);
                 }
                 if self.pes[pe_idx].task.is_some() {
@@ -538,22 +565,20 @@ impl<'a> CycleAccurateSimulator<'a> {
                 }
 
                 // Stream buffer fetch data.
-                let mut max_latency = 0;
                 for lane_idx in 0..self.lane_num {
                     let rb_num = self.pes[pe_idx].stream_buffer_size
                         - self.pes[pe_idx].stream_buffers[lane_idx].len();
-                    let (latency, bs) = self.stream_b_row(pe_idx, lane_idx, rb_num);
-                    max_latency = max(max_latency, latency);
+                    let bs = self.stream_b_row(pe_idx, lane_idx, rb_num, self.exec_cycle);
                     // trace_print!("-stream b {:?} to {}", &bs, lane_idx);
+                    // trace_print!("stream buffer {} {:?} ", lane_idx, &self.pes[pe_idx].stream_buffers[lane_idx]);
                     self.pes[pe_idx].push_stream_buffer(lane_idx, bs);
                 }
-                self.pending_cycle[pe_idx] += max_latency;
 
-                // Pending when access a or b matrix.
-                if self.pending_cycle[pe_idx] > 0 {
-                    self.pending_cycle[pe_idx] -= 1;
-                    continue;
-                }
+                // // Pending when access a or b matrix.
+                // if self.a_pending_cycle[pe_idx] > 0 {
+                //     self.a_pending_cycle[pe_idx] -= 1;
+                //     continue;
+                // }
 
                 // Production phase.
                 trace_print!("-Prod ");
@@ -570,6 +595,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                     if prod.is_some() {
                         self.pes[pe_idx].push_psum_buffer(lane_idx, prod.unwrap());
                     }
+                    // trace_print!("psum buffer: {} {:?} ", lane_idx, &self.pes[pe_idx].psum_buffers[lane_idx]);
                 }
                 trace_println!("");
 
@@ -682,7 +708,7 @@ impl<'a> CycleAccurateSimulator<'a> {
         }
     }
 
-    pub fn stream_b_row(
+    pub fn old_stream_b_row(
         &mut self,
         pe_idx: usize,
         lane_idx: usize,
@@ -723,6 +749,65 @@ impl<'a> CycleAccurateSimulator<'a> {
         window_tracker.b_cols_assigned[lane_idx] += latency_elements.1.len();
 
         return latency_elements;
+    }
+
+    pub fn stream_b_row(
+        &mut self,
+        pe_idx: usize,
+        lane_idx: usize,
+        rb_num: usize,
+        cur_cycle: usize,
+    ) -> Option<Vec<Element>> {
+        if self.pes[pe_idx].task.is_none() {
+            return None;
+        }
+        let task = self.pes[pe_idx].task.as_ref().unwrap();
+
+        let window_tracker = self
+            .scheduler
+            .window_tracker
+            .get_mut(&task.window_token)
+            .unwrap();
+        let scalar_idx = window_tracker.lane2idx[lane_idx];
+        if scalar_idx.is_none() {
+            return None;
+        }
+
+        let scalar_idx = scalar_idx.unwrap();
+        let b_col_idx = window_tracker.b_cols_assigned[lane_idx];
+        // trace_println!(
+        //     "scalar_idx {:?} b_col_idx {} rb_num {}",
+        //     scalar_idx,
+        //     b_col_idx,
+        //     rb_num
+        // );
+        let elements = if self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
+            match self.fiber_cache.request_consume_scalars(scalar_idx, b_col_idx, rb_num, cur_cycle) {
+                Some(es) => {
+                    if es.len() == 0 {
+                        None
+                    } else {
+                        window_tracker.b_cols_assigned[lane_idx] += es.len();
+                        Some(es)
+                    }
+                }
+                None => Some(vec![]) // Pending cycle, not drained.
+            }
+        } else {
+            match self.fiber_cache.request_read_scalars(scalar_idx, b_col_idx, rb_num, cur_cycle) {
+                Some(es) => {
+                    if es.len() == 0 {
+                        None
+                    } else {
+                        window_tracker.b_cols_assigned[lane_idx] += es.len();
+                        Some(es)
+                    }
+                }
+                None => Some(vec![]) // Pending cycle, not drained.
+            }
+        };
+
+        return elements;
     }
 
     pub fn write_psums(&mut self, pe_idx: usize, psums: Vec<Vec<Element>>) {
