@@ -1,5 +1,6 @@
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
+use std::mem;
 
 use crate::block_topo_tracker::BlockTopoTracker;
 use crate::colwise_irr_adjust::{self, ColwiseIrrBlockAdjustTracker, ColwiseIrrBlockInfo};
@@ -157,6 +158,7 @@ pub struct Scheduler {
     pub a_tail_produced: HashSet<usize>,
     pub a_row_finished: HashSet<usize>,
     pub a_cols_assigned: Vec<usize>,
+    staged_tasks: Vec<Option<Task>>,
 }
 
 impl Scheduler {
@@ -208,6 +210,7 @@ impl Scheduler {
             mem_latency,
             cache_latency,
             a_cols_assigned: vec![0; a_matrix.row_num()],
+            staged_tasks: vec![None; pe_num],
         }
     }
 
@@ -216,11 +219,23 @@ impl Scheduler {
         pe: &mut PE,
         a_matrix: &mut CsrMatStorage,
     ) -> Option<(usize, Task)> {
-        if pe.task.is_none() || self.is_block_finished(pe.task.as_ref().unwrap().block_token) {
-            // If any merge block is ready, assign the merge block.
-            if let Some(task) = self.merge_task() {
-                return Some((0, task));
+        // Prior to merge task.
+        if let Some(task) = self.merge_task() {
+            if pe.task.is_some() && !pe.task.as_ref().unwrap().merge_mode {
+                self.staged_tasks[pe.pe_idx] = mem::replace(&mut pe.task, None);
             }
+            return Some((0, task));
+        }
+        // Pick up staged task.
+        else if self.staged_tasks[pe.pe_idx].is_some() {
+            pe.task = mem::replace(&mut self.staged_tasks[pe.pe_idx], None);
+        }
+
+        if pe.task.is_none() || self.is_block_finished(pe.task.as_ref().unwrap().block_token) {
+            // // If any merge block is ready, assign the merge block.
+            // if let Some(task) = self.merge_task() {
+            //     return Some((0, task));
+            // }
             // Otherwise allocate a new block.
             match self.next_block() {
                 None => {
@@ -371,7 +386,7 @@ impl Scheduler {
         let mut pnum = 0;
 
         // If `lane_num / 2` pairs of psums are found, the a merge block is ready.
-        // trace_println!("output_tracker: {:?}", &self.output_tracker);
+        trace_println!("output_tracker: {:?}", &self.output_tracker);
         for psum_addrs in self.output_tracker.values() {
             if pnum >= self.lane_num / 2 {
                 break;

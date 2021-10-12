@@ -240,6 +240,7 @@ pub struct PE {
     pub stream_buffer_size: usize,
     pub psum_buffer_size: usize,
     // Config.
+    pub pe_idx: usize,
     pub lane_num: usize,
     pub look_aside: bool,
     pub tail_flags: Vec<usize>,
@@ -249,6 +250,7 @@ pub struct PE {
 
 impl PE {
     pub fn new(
+        pe_idx: usize,
         sb_size: usize,
         pb_size: usize,
         lane_num: usize,
@@ -264,6 +266,7 @@ impl PE {
             merge_tree: MergeTree::new(mt_latency),
             stream_buffer_size: sb_size,
             psum_buffer_size: pb_size,
+            pe_idx,
             lane_num,
             look_aside: false,
             tail_flags: vec![0; lane_num],
@@ -449,17 +452,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                 mem_latency,
                 cache_latency,
             ),
-            pes: vec![
-                PE::new(
-                    sb_size,
-                    pb_size,
-                    lane_num,
-                    pop_num_per_lane,
-                    sn_latency,
-                    mt_latency
-                );
-                pe_num
-            ],
+            pes: (0..pe_num).map(|pe_idx| PE::new(pe_idx, sb_size, pb_size, lane_num, pop_num_per_lane, sn_latency, mt_latency)).collect::<Vec<PE>>(),
             a_matrix,
             exec_cycle: 0,
             a_pending_cycle: vec![0; pe_num],
