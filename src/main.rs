@@ -8,6 +8,7 @@ mod colwise_reg_adjust;
 mod cycle_accurate_simulator;
 mod frontend;
 mod gemm;
+mod oracle_rowwise_adjust;
 mod preprocessing;
 mod py2rust;
 mod rowwise_adjust;

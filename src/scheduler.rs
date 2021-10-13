@@ -658,7 +658,7 @@ impl Scheduler {
                 return;
             }
             Accelerator::NewOmega => {
-                let scheme = 0;
+                let scheme = 2;
                 self.block_shape = match scheme {
                     0 => self.rowwise_adjust_tracker.adjust_block_shape(
                         block_anchor,
@@ -693,7 +693,7 @@ impl Scheduler {
                 return;
             }
             Accelerator::NewOmega => {
-                let scheme = 0;
+                let scheme = 2;
                 self.block_shape = match scheme {
                     0 => self.block_shape,
                     1 => self.block_shape,
@@ -714,7 +714,7 @@ impl Scheduler {
                 return [self.block_shape[0], self.lane_num / self.block_shape[0]];
             }
             Accelerator::NewOmega => {
-                let scheme = 0;
+                let scheme = 2;
                 match scheme {
                     0 => self
                         .rowwise_adjust_tracker
