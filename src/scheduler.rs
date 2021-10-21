@@ -143,6 +143,7 @@ pub struct Scheduler {
     pub mem_latency: usize,
     pub cache_latency: usize,
     // Adjust scheme.
+    adjust_scheme: usize,
     b_sparsity: f32,
     pub rowwise_adjust_tracker: RowwiseAdjustTracker,
     pub colwise_reg_adjust_tracker: ColwiseRegBlockAdjustTracker,
@@ -190,6 +191,7 @@ impl Scheduler {
             b_row_lens: (0..b_matrix.row_num())
                 .map(|idx| (idx, b_matrix.get_ele_num(idx, idx + 1)))
                 .collect::<HashMap<usize, usize>>(),
+            adjust_scheme: 0,
             b_sparsity,
             block_tracker: HashMap::new(),
             window_tracker: HashMap::new(),
@@ -658,8 +660,7 @@ impl Scheduler {
                 return;
             }
             Accelerator::NewOmega => {
-                let scheme = 2;
-                self.block_shape = match scheme {
+                self.block_shape = match self.adjust_scheme {
                     0 => self.rowwise_adjust_tracker.adjust_block_shape(
                         block_anchor,
                         self.row_s,
@@ -681,7 +682,7 @@ impl Scheduler {
                             self.block_shape
                         }
                     }
-                    _ => panic!("Invalid merge scheme: {}", scheme),
+                    _ => panic!("Invalid merge scheme: {}", self.adjust_scheme),
                 }
             }
         }
@@ -693,8 +694,7 @@ impl Scheduler {
                 return;
             }
             Accelerator::NewOmega => {
-                let scheme = 2;
-                self.block_shape = match scheme {
+                self.block_shape = match self.adjust_scheme {
                     0 => self.block_shape,
                     1 => self.block_shape,
                     2 => self.colwise_irr_adjust_tracker.adjust_block_shape(
@@ -702,7 +702,7 @@ impl Scheduler {
                         self.a_row_num,
                         &&self.block_topo_tracker,
                     ),
-                    _ => panic!("Invalid merge scheme: {}", scheme),
+                    _ => panic!("Invalid merge scheme: {}", self.adjust_scheme),
                 }
             }
         }
@@ -714,8 +714,7 @@ impl Scheduler {
                 return [self.block_shape[0], self.lane_num / self.block_shape[0]];
             }
             Accelerator::NewOmega => {
-                let scheme = 2;
-                match scheme {
+                match self.adjust_scheme {
                     0 => self
                         .rowwise_adjust_tracker
                         .adjust_window_shape(self.block_tracker[&block_token].shape),
@@ -728,7 +727,7 @@ impl Scheduler {
                     2 => self
                         .colwise_irr_adjust_tracker
                         .adjust_window_shape(self.block_tracker[&block_token].shape),
-                    _ => panic!("Invalid adjust scheme: {}", scheme),
+                    _ => panic!("Invalid adjust scheme: {}", self.adjust_scheme),
                 }
             }
         }

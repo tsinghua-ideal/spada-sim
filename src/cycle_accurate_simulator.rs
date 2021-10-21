@@ -38,9 +38,15 @@ impl Multiplier {
     }
 
     pub fn set_b(&mut self, b: Option<Element>) {
-        if b.is_none() {
-            self.b = None;
-        } else if b.is_some() && b.as_ref().unwrap().idx == [usize::MAX; 2] {
+        // if b.is_none() {
+        //     self.b = None;
+        // } else if b.is_some() && b.as_ref().unwrap().idx == [usize::MAX; 2] {
+        //     self.row_drained = true;
+        //     self.b = None;
+        // } else {
+        //     self.b = b;
+        // }
+        if b.is_some() && b.as_ref().unwrap().idx == [usize::MAX; 2] {
             self.row_drained = true;
             self.b = None;
         } else {
@@ -243,9 +249,11 @@ pub struct PE {
     pub pe_idx: usize,
     pub lane_num: usize,
     pub look_aside: bool,
-    pub tail_flags: Vec<usize>,
     pub task: Option<Task>,
+    // Control.
+    pub tail_flags: Vec<usize>,
     pub sb_drained: Vec<bool>,
+    pub full_flags: Vec<bool>,
 }
 
 impl PE {
@@ -272,6 +280,7 @@ impl PE {
             tail_flags: vec![0; lane_num],
             task: None,
             sb_drained: vec![true; lane_num],
+            full_flags: vec![false; lane_num],
         }
     }
 
@@ -297,17 +306,19 @@ impl PE {
         let group_size = self.task.as_ref().unwrap().group_size;
         for s in (0..self.lane_num).step_by(group_size) {
             let mut tail_flag = usize::MAX;
-            for lane_idx in 0..self.lane_num {
-                // trace_println!("tail flag {} {:?} {:?}", tail_flag, self.psum_buffers[lane_idx], self.multipliers);
+            for lane_idx in s..min(s+group_size, self.lane_num) {
+                trace_println!("tail flag {} {:?} {:?}", tail_flag, self.psum_buffers[lane_idx], self.multipliers[lane_idx]);
                 if self.psum_buffers[lane_idx].len() >= 3 {
                     tail_flag = min(tail_flag, self.psum_buffers[lane_idx][2].idx[1]);
+                    // trace_println!("update_tf: >3, lane: {}, tf: {}", lane_idx, tail_flag);
                 // Accumulate for enough elements.
                 } else if !self.multipliers[lane_idx].is_empty() {
-                    tail_flag = min(tail_flag, self.psum_buffers[lane_idx].back().map_or(usize::MAX, |x| x.idx[1]));
+                    tail_flag = min(tail_flag, self.psum_buffers[lane_idx].back().map_or(0, |x| x.idx[1]));
                 }
                 // Else the row is all emitted, the tail flag can be set to MAX.
+                // trace_println!("update_tail_flags: lane: {} tail_flag: {}", lane_idx, tail_flag);
             }
-            self.tail_flags[s..s + group_size].fill(tail_flag);
+            self.tail_flags[s..min(s+group_size, self.lane_num)].fill(tail_flag);
         }
     }
 
@@ -326,7 +337,7 @@ impl PE {
     }
 
     pub fn pop_stream_buffer(&mut self, lane_idx: usize) -> Option<Element> {
-        if self.task.is_none() {
+        if self.task.is_none() || self.full_flags[lane_idx] {
             return None;
         }
 
@@ -559,8 +570,8 @@ impl<'a> CycleAccurateSimulator<'a> {
 
                 // Stream buffer fetch data.
                 for lane_idx in 0..self.lane_num {
-                    let rb_num = self.pes[pe_idx].stream_buffer_size
-                        - self.pes[pe_idx].stream_buffers[lane_idx].len();
+                    let sb_len = self.pes[pe_idx].stream_buffers[lane_idx].iter().filter(|e| e.idx[0] != usize::MAX).count();
+                    let rb_num = self.pes[pe_idx].stream_buffer_size - sb_len;
                     let bs = self.stream_b_row(pe_idx, lane_idx, rb_num, self.exec_cycle);
                     // trace_print!("-stream b {:?} to {}", &bs, lane_idx);
                     // trace_print!("stream buffer {} {:?} ", lane_idx, &self.pes[pe_idx].stream_buffers[lane_idx]);
@@ -576,10 +587,16 @@ impl<'a> CycleAccurateSimulator<'a> {
                 // Production phase.
                 trace_print!("-Prod ");
                 for lane_idx in 0..self.lane_num {
+                    // Update full flag.
+                    if self.pes[pe_idx].psum_buffers[lane_idx].len() >= self.pes[pe_idx].psum_buffer_size - 1 {
+                        self.pes[pe_idx].full_flags[lane_idx] = true;
+                    } else {
+                        self.pes[pe_idx].full_flags[lane_idx] = false;
+                    }
                     // Pop from stream buffer.
                     let b = self.pes[pe_idx].pop_stream_buffer(lane_idx);
                     // Set b element to multiplier.
-                    // trace_print!("-mul b {:?} to {}", &b, lane_idx);
+                    trace_println!("-mul b {:?} to {}", &b, lane_idx);
                     let prod = self.pes[pe_idx].multipliers[lane_idx].retrieve_c();
                     self.pes[pe_idx].multipliers[lane_idx].set_b(b);
                     self.pes[pe_idx].multipliers[lane_idx].multiply();
@@ -588,7 +605,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                     if prod.is_some() {
                         self.pes[pe_idx].push_psum_buffer(lane_idx, prod.unwrap());
                     }
-                    // trace_print!("psum buffer: {} {:?} ", lane_idx, &self.pes[pe_idx].psum_buffers[lane_idx]);
+                    trace_println!("psum buffer: {} {:?} ", lane_idx, &self.pes[pe_idx].psum_buffers[lane_idx]);
                 }
                 trace_println!("");
 

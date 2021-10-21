@@ -2665,6 +2665,10 @@ impl<'a> LatencyPriorityCache<'a> {
         num: usize,
         cur_cycle: usize,
     ) -> Option<Vec<Element>> {
+        // Read 0 elements should not mean the end of the row, thus return None.
+        if num == 0 {
+            return None;
+        }
         // Pending the request.
         if !self.pending_request.contains_key(&a_loc) {
             if self.rowmap.contains_key(&a_loc[1]) {
@@ -2753,6 +2757,10 @@ impl<'a> LatencyPriorityCache<'a> {
         num: usize,
         cur_cycle: usize,
     ) -> Option<Vec<Element>> {
+        // Read 0 elements should not mean the end of the row, thus return None.
+        if num == 0 {
+            return None;
+        }
         // Pending the request.
         if !self.pending_request.contains_key(&a_loc) {
             if self.rowmap.contains_key(&a_loc[1]) {
