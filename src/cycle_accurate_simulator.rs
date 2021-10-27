@@ -488,6 +488,7 @@ impl<'a> CycleAccurateSimulator<'a> {
 
             // Fetch data stage.
             for pe_idx in 0..self.pe_num {
+                trace_println!("---pe {}", pe_idx);
                 // Pending when access a or b matrix.
                 if self.a_pending_cycle[pe_idx] > 0 {
                     self.a_pending_cycle[pe_idx] -= 1;
@@ -507,6 +508,24 @@ impl<'a> CycleAccurateSimulator<'a> {
                         .is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token))
                     && self.pes[pe_idx].idle()
                 {
+                    // Collect output psums.
+                    if self.pes[pe_idx].task.is_some() {
+                        let prev_win_token = self.pes[pe_idx].task.as_ref().unwrap().window_token;
+                        for arow_addr in self.scheduler.window_tracker[&prev_win_token].arow_addr_pairs.iter() {
+                            if !self.scheduler.b_row_lens.contains_key(&arow_addr[1]) {
+                                continue;
+                            }
+                            self.scheduler
+                                .output_tracker
+                                .entry(arow_addr[0])
+                                .and_modify(|ps| {
+                                    if !ps.contains(&arow_addr[1]) {
+                                        ps.push(arow_addr[1]);
+                                    }
+                                })
+                                .or_insert(vec![arow_addr[1]]);
+                        }
+                    }
                     // Collect stats of the prev finished task.
                     if self.pes[pe_idx].task.is_some()
                         && !self.pes[pe_idx].task.as_ref().unwrap().merge_mode
@@ -804,6 +823,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                 None => Some(vec![]) // Pending cycle, not drained.
             }
         } else {
+            trace_println!("scalar_idx: {:?} b_col_idx: {:?}", scalar_idx, b_col_idx);
             match self.fiber_cache.request_read_scalars(scalar_idx, b_col_idx, rb_num, cur_cycle) {
                 Some(es) => {
                     if es.len() == 0 {
@@ -847,17 +867,16 @@ impl<'a> CycleAccurateSimulator<'a> {
                 .and_modify(|l| *l += csrrow.len())
                 .or_insert(csrrow.len());
             self.fiber_cache.append_psum_to(arow_addr[1], csrrow);
-
-            // Update pending psums.
-            self.scheduler
-                .output_tracker
-                .entry(arow_addr[0])
-                .and_modify(|ps| {
-                    if !ps.contains(&arow_addr[1]) {
-                        ps.push(arow_addr[1])
-                    }
-                })
-                .or_insert(vec![arow_addr[1]]);
+            // // Update pending psums.
+            // self.scheduler
+            //     .output_tracker
+            //     .entry(arow_addr[0])
+            //     .and_modify(|ps| {
+            //         if !ps.contains(&arow_addr[1]) {
+            //             ps.push(arow_addr[1])
+            //         }
+            //     })
+            //     .or_insert(vec![arow_addr[1]]);
         }
     }
 
@@ -875,6 +894,9 @@ impl<'a> CycleAccurateSimulator<'a> {
             .collect::<Vec<usize>>();
         trace_println!("swapable_rows: {:?}", &swapable_rows);
         for row in swapable_rows {
+            if !self.fiber_cache.rowmap.contains_key(&output_tracker[&row][0]) {
+                continue;
+            }
             self.fiber_cache.swapout(output_tracker[&row][0]);
             self.scheduler.a_row_finished.insert(row);
         }

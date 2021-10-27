@@ -2685,7 +2685,7 @@ impl<'a> LatencyPriorityCache<'a> {
             }
         }
         // Process the pending request.
-        if self.pending_request[&a_loc] < cur_cycle {
+        if cur_cycle < self.pending_request[&a_loc] {
             return None;
         }
         self.pending_request.remove(&a_loc);

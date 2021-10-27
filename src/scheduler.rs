@@ -160,6 +160,7 @@ pub struct Scheduler {
     pub a_row_finished: HashSet<usize>,
     pub a_cols_assigned: Vec<usize>,
     staged_tasks: Vec<Option<Task>>,
+    latest_block_token: usize,
 }
 
 impl Scheduler {
@@ -213,10 +214,11 @@ impl Scheduler {
             cache_latency,
             a_cols_assigned: vec![0; a_matrix.row_num()],
             staged_tasks: vec![None; pe_num],
+            latest_block_token: usize::MAX,
         }
     }
 
-    pub fn assign_task(
+    pub fn old_assign_task(
         &mut self,
         pe: &mut PE,
         a_matrix: &mut CsrMatStorage,
@@ -263,6 +265,52 @@ impl Scheduler {
                     return Some(latency_task);
                 }
             }
+        }
+    }
+
+    pub fn assign_task(
+        &mut self,
+        pe: &mut PE,
+        a_matrix: &mut CsrMatStorage,
+    ) -> Option<(usize, Task)> {
+        // Prior to merge task.
+        if let Some(task) = self.merge_task() {
+            if pe.task.is_some() && !pe.task.as_ref().unwrap().merge_mode {
+                self.staged_tasks[pe.pe_idx] = mem::replace(&mut pe.task, None);
+            }
+            return Some((0, task));
+        }
+        // Pick up staged task.
+        else if self.staged_tasks[pe.pe_idx].is_some() {
+            pe.task = mem::replace(&mut self.staged_tasks[pe.pe_idx], None);
+        }
+
+        // If previous block is finished, try assign the undone latest block, or alloc a new block.
+        if pe.task.is_none() || self.is_block_finished(pe.task.as_ref().unwrap().block_token) {
+            if self.latest_block_token != usize::MAX
+            // && pe.task.as_ref().unwrap().block_token < self.latest_block_token
+            && !self.is_block_finished(self.latest_block_token) {
+                return self.next_window(self.latest_block_token, a_matrix);
+            } else {
+                match self.next_block() {
+                    None => {
+                        self.a_traversed = true;
+                        // Check if there are some merge task remained.
+                        if let Some(task) = self.merge_task() {
+                            return Some((0, task));
+                        } else {
+                            return None;
+                        }
+                    }
+                    Some(blk_token) => {
+                        let latency_task = self.next_window(blk_token, a_matrix);
+                        self.latest_block_token = blk_token;
+                        return latency_task;
+                    }
+                }
+            }
+        } else {
+            return self.next_window(pe.task.as_ref().unwrap().block_token, a_matrix);
         }
     }
 
@@ -495,12 +543,12 @@ impl Scheduler {
             window_token = self.window_token.tik();
             window_anchor = self.block_tracker.get_mut(&block_token).unwrap().anchor;
             block_anchor = self.block_tracker.get_mut(&block_token).unwrap().anchor;
-            a_latency = self.mem_latency;
+            a_latency = self.cache_latency;
         } else {
             let prev_window = prev_window.unwrap();
             let blk_tracker = self.block_tracker.get(&block_token).unwrap();
             let window = self.window_tracker.get(&prev_window).unwrap();
-            window_token = window.token;
+            window_token = self.window_token.tik();
             window_anchor = window.anchor;
             window_shape = window.shape;
             block_anchor = blk_tracker.anchor;
