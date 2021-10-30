@@ -8,5 +8,7 @@
     "word_byte": 8,
     "block_shape": [1, 10000000],
     "mem_latency": 100,
-    "cache_latency": 0
+    "cache_latency": 0,
+    "freq": 1.0,
+    "bandwidth": 128.0
 }

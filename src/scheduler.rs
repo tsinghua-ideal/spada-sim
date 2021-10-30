@@ -1,6 +1,7 @@
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet};
 use std::mem;
+use std::ops::AddAssign;
 
 use crate::block_topo_tracker::BlockTopoTracker;
 use crate::colwise_irr_adjust::{self, ColwiseIrrBlockAdjustTracker, ColwiseIrrBlockInfo};
@@ -159,6 +160,8 @@ pub struct Scheduler {
     pub a_tail_produced: HashSet<usize>,
     pub a_row_finished: HashSet<usize>,
     pub a_cols_assigned: Vec<usize>,
+    pub a_cols_produced: HashMap<usize, usize>,
+    pub row_rgstr_task: HashMap<usize, usize>,
     staged_tasks: Vec<Option<Task>>,
     latest_block_token: usize,
 }
@@ -213,6 +216,8 @@ impl Scheduler {
             mem_latency,
             cache_latency,
             a_cols_assigned: vec![0; a_matrix.row_num()],
+            a_cols_produced: HashMap::new(),
+            row_rgstr_task: HashMap::new(),
             staged_tasks: vec![None; pe_num],
             latest_block_token: usize::MAX,
         }
@@ -436,7 +441,11 @@ impl Scheduler {
         let mut pnum = 0;
 
         // If `lane_num / 2` pairs of psums are found, the a merge block is ready.
-        trace_println!("output_tracker: {:?}", &self.output_tracker);
+        trace_println!("output_tracker: {:?}",
+            &self.output_tracker
+            .iter()
+            .filter(|(_, v)| v.len() > 1)
+            .collect::<Vec<_>>());
         for psum_addrs in self.output_tracker.values() {
             if pnum >= self.lane_num / 2 {
                 break;
@@ -483,6 +492,15 @@ impl Scheduler {
         }
         // Create merge task.
         let task = Task::new(blk_token, win_token, 2, true, a_eles);
+        //Register task in each row.
+        for arow_addr in arow_addr_pairs.iter() {
+            if arow_addr[0] != usize::MAX {
+                self.row_rgstr_task
+                    .entry(arow_addr[0])
+                    .or_default()
+                    .add_assign(1);
+            }
+        }
         // Config block tracker.
         self.block_tracker.insert(
             blk_token,
@@ -619,6 +637,13 @@ impl Scheduler {
                 lane2idx.push(None);
                 a_eles.push(None);
             }
+        }
+        // Register task in each row.
+        for arow_addr in output_addrs.iter() {
+            self.row_rgstr_task
+                .entry(arow_addr[0])
+                .or_default()
+                .add_assign(1);
         }
         // Config window tracker.
         self.window_tracker.insert(
@@ -821,4 +846,14 @@ impl Scheduler {
         // Config block topo tracker.
         self.block_topo_tracker.add_block(token, block_anchor);
     }
+
+    // pub fn update_produced_a_cols(&mut self, block_token: usize) {
+    //     let block = &self.block_tracker[&block_token];
+    //     for (ofst, a_col_num) in block.a_cols_num.iter().enumerate() {
+    //         self.a_cols_produced
+    //             .entry(block.anchor[0]+ofst)
+    //             .or_default()
+    //             .add_assign(a_col_num);
+    //     }
+    // }
 }

@@ -307,7 +307,7 @@ impl PE {
         for s in (0..self.lane_num).step_by(group_size) {
             let mut tail_flag = usize::MAX;
             for lane_idx in s..min(s+group_size, self.lane_num) {
-                trace_println!("tail flag {} {:?} {:?}", tail_flag, self.psum_buffers[lane_idx], self.multipliers[lane_idx]);
+                // trace_println!("tail flag {} {:?} {:?}", tail_flag, self.psum_buffers[lane_idx], self.multipliers[lane_idx]);
                 if self.psum_buffers[lane_idx].len() >= 3 {
                     tail_flag = min(tail_flag, self.psum_buffers[lane_idx][2].idx[1]);
                     // trace_println!("update_tf: >3, lane: {}, tf: {}", lane_idx, tail_flag);
@@ -414,6 +414,7 @@ pub struct CycleAccurateSimulator<'a> {
     scheduler: Scheduler,
     // Storage access latency related.
     pub a_pending_cycle: Vec<usize>,
+    pub cycle_pe_ele_bw: f32,
 }
 
 impl<'a> CycleAccurateSimulator<'a> {
@@ -430,6 +431,8 @@ impl<'a> CycleAccurateSimulator<'a> {
         accelerator: Accelerator,
         mem_latency: usize,
         cache_latency: usize,
+        freq: f32,
+        bandwidth: f32,
     ) -> CycleAccurateSimulator<'a> {
         let var_factor = 1.5;
         let sb_size = 4;
@@ -437,6 +440,10 @@ impl<'a> CycleAccurateSimulator<'a> {
         let pop_num_per_lane = 2;
         let sn_latency = 4;
         let mt_latency = 4;
+        let cycle_pe_ele_bw = bandwidth
+            / freq
+            / ((8+4) * word_byte) as f32
+            / pe_num as f32;
         CycleAccurateSimulator {
             scheduler: Scheduler::new(
                 pe_num,
@@ -467,6 +474,7 @@ impl<'a> CycleAccurateSimulator<'a> {
             a_matrix,
             exec_cycle: 0,
             a_pending_cycle: vec![0; pe_num],
+            cycle_pe_ele_bw: cycle_pe_ele_bw,
         }
     }
 
@@ -512,18 +520,21 @@ impl<'a> CycleAccurateSimulator<'a> {
                     if self.pes[pe_idx].task.is_some() {
                         let prev_win_token = self.pes[pe_idx].task.as_ref().unwrap().window_token;
                         for arow_addr in self.scheduler.window_tracker[&prev_win_token].arow_addr_pairs.iter() {
-                            if !self.scheduler.b_row_lens.contains_key(&arow_addr[1]) {
-                                continue;
-                            }
                             self.scheduler
-                                .output_tracker
+                                .row_rgstr_task
                                 .entry(arow_addr[0])
-                                .and_modify(|ps| {
-                                    if !ps.contains(&arow_addr[1]) {
-                                        ps.push(arow_addr[1]);
-                                    }
-                                })
-                                .or_insert(vec![arow_addr[1]]);
+                                .and_modify(|e| *e -= 1);
+                            if self.scheduler.b_row_lens.contains_key(&arow_addr[1]) {
+                                self.scheduler
+                                    .output_tracker
+                                    .entry(arow_addr[0])
+                                    .and_modify(|ps| {
+                                        if !ps.contains(&arow_addr[1]) {
+                                            ps.push(arow_addr[1]);
+                                        }
+                                    })
+                                    .or_insert(vec![arow_addr[1]]);
+                            }
                         }
                     }
                     // Collect stats of the prev finished task.
@@ -823,7 +834,6 @@ impl<'a> CycleAccurateSimulator<'a> {
                 None => Some(vec![]) // Pending cycle, not drained.
             }
         } else {
-            trace_println!("scalar_idx: {:?} b_col_idx: {:?}", scalar_idx, b_col_idx);
             match self.fiber_cache.request_read_scalars(scalar_idx, b_col_idx, rb_num, cur_cycle) {
                 Some(es) => {
                     if es.len() == 0 {
@@ -883,16 +893,25 @@ impl<'a> CycleAccurateSimulator<'a> {
     pub fn swapout_finished_psums(&mut self) {
         trace_print!("finished a rows: {:?} ", &self.scheduler.a_tail_produced);
         let output_tracker = &mut self.scheduler.output_tracker;
+        let row_rgstr_task = & self.scheduler.row_rgstr_task;
+        trace_print!("row_rgstr_task: {:?}", row_rgstr_task);
         for id in self.scheduler.a_tail_produced.iter() {
-            trace_print!("{:?} ", &output_tracker[id]);
+            trace_print!("{:?}", &output_tracker[id]);
         }
         trace_println!("");
         let swapable_rows = self
             .scheduler
             .a_tail_produced
-            .drain_filter(|row| output_tracker.get(row).map_or(true, |ps| ps.len() == 1))
+            .drain_filter(|row|
+                row_rgstr_task
+                    .get(row)
+                    .map_or(true, |r| *r == 0)
+                && output_tracker
+                    .get(row)
+                    .map_or(true, |ps| ps.len() == 1)
+            )
             .collect::<Vec<usize>>();
-        trace_println!("swapable_rows: {:?}", &swapable_rows);
+        trace_println!("swapable_row: {:?}", &swapable_rows);
         for row in swapable_rows {
             if !self.fiber_cache.rowmap.contains_key(&output_tracker[&row][0]) {
                 continue;

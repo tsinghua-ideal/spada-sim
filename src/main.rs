@@ -332,6 +332,8 @@ fn main() {
                 cli.accelerator.clone(),
                 omega_config.mem_latency,
                 omega_config.cache_latency,
+                omega_config.freq,
+                omega_config.bandwidth,
             );
 
             cycle_simu.execute();

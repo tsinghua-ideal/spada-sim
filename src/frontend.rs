@@ -17,6 +17,8 @@ pub struct OmegaConfig {
     pub block_shape: [usize; 2],
     pub mem_latency: usize,
     pub cache_latency: usize,
+    pub freq: f32,
+    pub bandwidth: f32,
 }
 
 arg_enum! {
