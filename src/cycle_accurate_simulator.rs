@@ -254,6 +254,7 @@ pub struct PE {
     pub tail_flags: Vec<usize>,
     pub sb_drained: Vec<bool>,
     pub full_flags: Vec<bool>,
+    pub mem_finish_cycle: Option<usize>,
 }
 
 impl PE {
@@ -281,6 +282,7 @@ impl PE {
             task: None,
             sb_drained: vec![true; lane_num],
             full_flags: vec![false; lane_num],
+            mem_finish_cycle: None,
         }
     }
 
@@ -389,6 +391,7 @@ impl PE {
                 self.multipliers[lane_idx].set_a(None);
             }
             // Pb, sn, mt remain the previous configuration.
+            self.mem_finish_cycle = None;
             self.task = None;
             return 0;
         } else {
@@ -399,6 +402,7 @@ impl PE {
                 self.sb_drained[lane_idx] = e.is_none();
                 self.multipliers[lane_idx].set_a(e);
             }
+            self.mem_finish_cycle = None;
             return a_latency;
         }
     }
@@ -414,7 +418,7 @@ pub struct CycleAccurateSimulator<'a> {
     scheduler: Scheduler,
     // Storage access latency related.
     pub a_pending_cycle: Vec<usize>,
-    pub cycle_pe_ele_bw: f32,
+    pub word_cycle_bw: f32,
 }
 
 impl<'a> CycleAccurateSimulator<'a> {
@@ -440,9 +444,9 @@ impl<'a> CycleAccurateSimulator<'a> {
         let pop_num_per_lane = 2;
         let sn_latency = 4;
         let mt_latency = 4;
-        let cycle_pe_ele_bw = bandwidth
+        let word_cycle_bw = bandwidth
             / freq
-            / ((8+4) * word_byte) as f32
+            / word_byte as f32
             / pe_num as f32;
         CycleAccurateSimulator {
             scheduler: Scheduler::new(
@@ -474,7 +478,7 @@ impl<'a> CycleAccurateSimulator<'a> {
             a_matrix,
             exec_cycle: 0,
             a_pending_cycle: vec![0; pe_num],
-            cycle_pe_ele_bw: cycle_pe_ele_bw,
+            word_cycle_bw,
         }
     }
 
@@ -484,7 +488,7 @@ impl<'a> CycleAccurateSimulator<'a> {
         loop {
             trace_println!("\n---- cycle {}", self.exec_cycle);
 
-            let prev_a_r = self.a_matrix.read_count;
+            let mut prev_a_rs = vec![0; self.pe_num];
             let mut prev_b_rs = vec![0; self.pe_num];
             let mut prev_psum_rs = vec![0; self.pe_num];
             let mut prev_psum_ws = vec![0; self.pe_num];
@@ -503,6 +507,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                     continue;
                 }
                 // Collect prev exec stats.
+                prev_a_rs[pe_idx] = self.a_matrix.read_count;
                 prev_b_rs[pe_idx] = self.fiber_cache.b_mem.read_count;
                 prev_psum_rs[pe_idx] = self.fiber_cache.psum_mem.read_count;
                 prev_psum_ws[pe_idx] = self.fiber_cache.psum_mem.write_count;
@@ -516,6 +521,19 @@ impl<'a> CycleAccurateSimulator<'a> {
                         .is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token))
                     && self.pes[pe_idx].idle()
                 {
+                    // Stat the memory transfer cycle and calc the overlapped latency.
+                    if self.pes[pe_idx].mem_finish_cycle.is_none() {
+                        self.pes[pe_idx].mem_finish_cycle = self.pes[pe_idx].task.as_ref().map(|t| {
+                            println!("pe: {} cur_cycle: {} start_cycle: {} traffic: {} mem_cycle: {:?}", pe_idx, self.exec_cycle, t.start_cycle, t.memory_traffic, t.start_cycle + (t.memory_traffic as f32 / self.word_cycle_bw) as usize);
+                            println!("anchor: {:?}, shape: {:?}", self.scheduler.window_tracker[&t.window_token].anchor, self.scheduler.window_tracker[&t.window_token].shape);
+                            t.start_cycle + (t.memory_traffic as f32 / self.word_cycle_bw) as usize
+                            }
+                        );
+                    }
+                    // Wait to catch the pending cycle.
+                    if self.pes[pe_idx].mem_finish_cycle.is_some() && *self.pes[pe_idx].mem_finish_cycle.as_ref().unwrap() > self.exec_cycle {
+                        continue;
+                    }
                     // Collect output psums.
                     if self.pes[pe_idx].task.is_some() {
                         let prev_win_token = self.pes[pe_idx].task.as_ref().unwrap().window_token;
@@ -562,7 +580,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                     // Assign new tasks.
                     let task = self
                         .scheduler
-                        .assign_task(&mut self.pes[pe_idx], &mut self.a_matrix);
+                        .assign_task(&mut self.pes[pe_idx], &mut self.a_matrix, self.exec_cycle);
                     let latency = self.pes[pe_idx].set_task(task);
                     self.a_pending_cycle[pe_idx] += latency;
                     trace_println!("---pe {} new task: {:?}", pe_idx, &self.pes[pe_idx].task);
@@ -702,6 +720,15 @@ impl<'a> CycleAccurateSimulator<'a> {
                         tracker.psum_rw_size[1] += delta_cache;
                     }
                 }
+
+                let memory_traffic = self.a_matrix.read_count - prev_a_rs[pe_idx]
+                    + self.fiber_cache.b_mem.read_count - prev_b_rs[pe_idx]
+                    + self.fiber_cache.psum_mem.read_count - prev_psum_rs[pe_idx]
+                    + self.fiber_cache.psum_mem.write_count - prev_psum_ws[pe_idx];
+                trace_println!("memory_traffic: {}", memory_traffic);
+                if self.pes[pe_idx].task.is_some() {
+                    self.pes[pe_idx].task.as_mut().unwrap().memory_traffic += memory_traffic;
+                }
             }
 
             if self.scheduler.a_traversed && self.pes.iter().all(|p| p.idle() && p.task.is_none()) {
@@ -728,7 +755,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                 self.fiber_cache.psum_evict_count - prev_psum_evict, self.fiber_cache.psum_evict_count);
             trace_println!(
                 "A mem: read_count: + {} -> {}",
-                self.a_matrix.read_count - prev_a_r,
+                self.a_matrix.read_count - prev_a_rs[0],
                 self.a_matrix.read_count
             );
             trace_println!(
@@ -746,49 +773,6 @@ impl<'a> CycleAccurateSimulator<'a> {
 
             self.exec_cycle += 1;
         }
-    }
-
-    pub fn old_stream_b_row(
-        &mut self,
-        pe_idx: usize,
-        lane_idx: usize,
-        rb_num: usize,
-    ) -> (usize, Vec<Element>) {
-        if self.pes[pe_idx].task.is_none() {
-            return (0, vec![]);
-        }
-        let task = self.pes[pe_idx].task.as_ref().unwrap();
-
-        let window_tracker = self
-            .scheduler
-            .window_tracker
-            .get_mut(&task.window_token)
-            .unwrap();
-        let scalar_idx = window_tracker.lane2idx[lane_idx];
-        if scalar_idx.is_none() {
-            return (0, vec![]);
-        }
-
-        let scalar_idx = scalar_idx.unwrap();
-        let b_col_idx = window_tracker.b_cols_assigned[lane_idx];
-        // trace_println!(
-        //     "scalar_idx {:?} b_col_idx {} rb_num {}",
-        //     scalar_idx,
-        //     b_col_idx,
-        //     rb_num
-        // );
-        let latency_elements = if self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
-            self.fiber_cache
-                .consume_scalars(scalar_idx, b_col_idx, rb_num)
-                .unwrap()
-        } else {
-            self.fiber_cache
-                .read_scalars(scalar_idx, b_col_idx, rb_num)
-                .unwrap()
-        };
-        window_tracker.b_cols_assigned[lane_idx] += latency_elements.1.len();
-
-        return latency_elements;
     }
 
     pub fn stream_b_row(
@@ -822,7 +806,7 @@ impl<'a> CycleAccurateSimulator<'a> {
         //     rb_num
         // );
         let elements = if self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
-            match self.fiber_cache.request_consume_scalars(scalar_idx, b_col_idx, rb_num, cur_cycle) {
+            match self.fiber_cache.request_consume_scalars(scalar_idx, b_col_idx, rb_num, cur_cycle, true) {
                 Some(es) => {
                     if es.len() == 0 {
                         None
@@ -834,7 +818,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                 None => Some(vec![]) // Pending cycle, not drained.
             }
         } else {
-            match self.fiber_cache.request_read_scalars(scalar_idx, b_col_idx, rb_num, cur_cycle) {
+            match self.fiber_cache.request_read_scalars(scalar_idx, b_col_idx, rb_num, cur_cycle, true) {
                 Some(es) => {
                     if es.len() == 0 {
                         None

@@ -19,6 +19,8 @@ pub struct Task {
     pub group_size: usize,
     pub merge_mode: bool,
     pub a_eles: Vec<Option<Element>>,
+    pub memory_traffic: usize,
+    pub start_cycle: usize,
 }
 
 impl Task {
@@ -28,6 +30,7 @@ impl Task {
         group_size: usize,
         merge_mode: bool,
         a_eles: Vec<Option<Element>>,
+        start_cycle: usize,
     ) -> Task {
         Task {
             block_token,
@@ -35,6 +38,8 @@ impl Task {
             group_size,
             merge_mode,
             a_eles,
+            memory_traffic: 0,
+            start_cycle,
         }
     }
 }
@@ -134,8 +139,8 @@ pub struct Scheduler {
     pub a_traversed: bool,
     pe_num: usize,
     lane_num: usize,
-    row_s: usize,
-    col_s: usize,
+    pub row_s: usize,
+    pub col_s: usize,
     block_shape: [usize; 2],
     a_row_num: usize,
     pub accelerator: Accelerator,
@@ -223,63 +228,14 @@ impl Scheduler {
         }
     }
 
-    pub fn old_assign_task(
-        &mut self,
-        pe: &mut PE,
-        a_matrix: &mut CsrMatStorage,
-    ) -> Option<(usize, Task)> {
-        // Prior to merge task.
-        if let Some(task) = self.merge_task() {
-            if pe.task.is_some() && !pe.task.as_ref().unwrap().merge_mode {
-                self.staged_tasks[pe.pe_idx] = mem::replace(&mut pe.task, None);
-            }
-            return Some((0, task));
-        }
-        // Pick up staged task.
-        else if self.staged_tasks[pe.pe_idx].is_some() {
-            pe.task = mem::replace(&mut self.staged_tasks[pe.pe_idx], None);
-        }
-
-        if pe.task.is_none() || self.is_block_finished(pe.task.as_ref().unwrap().block_token) {
-            // // If any merge block is ready, assign the merge block.
-            // if let Some(task) = self.merge_task() {
-            //     return Some((0, task));
-            // }
-            // Otherwise allocate a new block.
-            match self.next_block() {
-                None => {
-                    self.a_traversed = true;
-                    // Check if there are some merge tasks remained.
-                    if let Some(task) = self.merge_task() {
-                        return Some((0, task));
-                    } else {
-                        return None;
-                    }
-                }
-                Some(blk_token) => {
-                    let latency_task = self.next_window(blk_token, a_matrix);
-                    return latency_task;
-                }
-            }
-        } else {
-            match self.next_window(pe.task.as_ref().unwrap().block_token, a_matrix) {
-                None => {
-                    return None;
-                }
-                Some(latency_task) => {
-                    return Some(latency_task);
-                }
-            }
-        }
-    }
-
     pub fn assign_task(
         &mut self,
         pe: &mut PE,
         a_matrix: &mut CsrMatStorage,
+        cur_cycle: usize,
     ) -> Option<(usize, Task)> {
         // Prior to merge task.
-        if let Some(task) = self.merge_task() {
+        if let Some(task) = self.merge_task(cur_cycle) {
             if pe.task.is_some() && !pe.task.as_ref().unwrap().merge_mode {
                 self.staged_tasks[pe.pe_idx] = mem::replace(&mut pe.task, None);
             }
@@ -295,27 +251,27 @@ impl Scheduler {
             if self.latest_block_token != usize::MAX
             // && pe.task.as_ref().unwrap().block_token < self.latest_block_token
             && !self.is_block_finished(self.latest_block_token) {
-                return self.next_window(self.latest_block_token, a_matrix);
+                return self.next_window(self.latest_block_token, a_matrix, cur_cycle);
             } else {
                 match self.next_block() {
                     None => {
                         self.a_traversed = true;
                         // Check if there are some merge task remained.
-                        if let Some(task) = self.merge_task() {
+                        if let Some(task) = self.merge_task(cur_cycle) {
                             return Some((0, task));
                         } else {
                             return None;
                         }
                     }
                     Some(blk_token) => {
-                        let latency_task = self.next_window(blk_token, a_matrix);
+                        let latency_task = self.next_window(blk_token, a_matrix, cur_cycle);
                         self.latest_block_token = blk_token;
                         return latency_task;
                     }
                 }
             }
         } else {
-            return self.next_window(pe.task.as_ref().unwrap().block_token, a_matrix);
+            return self.next_window(pe.task.as_ref().unwrap().block_token, a_matrix, cur_cycle);
         }
     }
 
@@ -436,7 +392,7 @@ impl Scheduler {
         }
     }
 
-    pub fn merge_task(&mut self) -> Option<Task> {
+    pub fn merge_task(&mut self, cur_cycle: usize) -> Option<Task> {
         let mut psums = vec![];
         let mut pnum = 0;
 
@@ -491,7 +447,7 @@ impl Scheduler {
             }
         }
         // Create merge task.
-        let task = Task::new(blk_token, win_token, 2, true, a_eles);
+        let task = Task::new(blk_token, win_token, 2, true, a_eles, cur_cycle);
         //Register task in each row.
         for arow_addr in arow_addr_pairs.iter() {
             if arow_addr[0] != usize::MAX {
@@ -546,6 +502,7 @@ impl Scheduler {
         &mut self,
         block_token: usize,
         a_matrix: &mut CsrMatStorage,
+        cur_cycle: usize,
     ) -> Option<(usize, Task)> {
         let prev_window = self.block_tracker[&block_token]
             .window_tokens
@@ -664,7 +621,7 @@ impl Scheduler {
             .window_tokens
             .push(window_token);
         // Config task.
-        let task = Task::new(block_token, window_token, window_shape[1], false, a_eles);
+        let task = Task::new(block_token, window_token, window_shape[1], false, a_eles, cur_cycle);
         return Some((a_latency, task));
     }
 

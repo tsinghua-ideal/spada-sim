@@ -2664,6 +2664,7 @@ impl<'a> LatencyPriorityCache<'a> {
         col_s: usize,
         num: usize,
         cur_cycle: usize,
+        no_delay: bool,
     ) -> Option<Vec<Element>> {
         // Read 0 elements should not mean the end of the row, thus return None.
         if num == 0 {
@@ -2673,14 +2674,20 @@ impl<'a> LatencyPriorityCache<'a> {
         if !self.pending_request.contains_key(&a_loc) {
             if self.rowmap.contains_key(&a_loc[1]) {
                 let ele_row = self.rowmap.get(&a_loc[1]).unwrap().len();
-                let b_latency = if col_s == 0 && ele_row > 0 {
+                let mut b_latency = if col_s == 0 && ele_row > 0 {
                     self.cache_latency
                 } else {
                     0
                 };
+                if no_delay {
+                    b_latency = 0;
+                }
                 self.pending_request.insert(a_loc, cur_cycle + b_latency);
             } else {
-                let b_latency = self.mem_latency + self.cache_latency;
+                let mut b_latency = self.mem_latency + self.cache_latency;
+                if no_delay {
+                    b_latency = 0;
+                }
                 self.pending_request.insert(a_loc, cur_cycle + b_latency);
             }
         }
@@ -2756,6 +2763,7 @@ impl<'a> LatencyPriorityCache<'a> {
         col_s: usize,
         num: usize,
         cur_cycle: usize,
+        no_delay: bool,
     ) -> Option<Vec<Element>> {
         // Read 0 elements should not mean the end of the row, thus return None.
         if num == 0 {
@@ -2765,14 +2773,20 @@ impl<'a> LatencyPriorityCache<'a> {
         if !self.pending_request.contains_key(&a_loc) {
             if self.rowmap.contains_key(&a_loc[1]) {
                 let ele_row = self.rowmap.get(&a_loc[1]).unwrap().len();
-                let b_latency = if col_s == 0 && ele_row > 0 {
+                let mut b_latency = if col_s == 0 && ele_row > 0 {
                     self.cache_latency
                 } else {
                     0
                 };
+                if no_delay {
+                    b_latency = 0;
+                }
                 self.pending_request.insert(a_loc, cur_cycle + b_latency);
             } else {
-                let b_latency = self.mem_latency + self.cache_latency;
+                let mut b_latency = self.mem_latency + self.cache_latency;
+                if no_delay {
+                    b_latency = 0;
+                }
                 self.pending_request.insert(a_loc, cur_cycle + b_latency);
             }
         }
