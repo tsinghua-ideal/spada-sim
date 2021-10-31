@@ -1,3 +1,5 @@
+use itertools::Itertools;
+
 use crate::frontend::Accelerator;
 use crate::scheduler::{Scheduler, Task};
 use crate::storage::{
@@ -96,6 +98,77 @@ impl Multiplier {
 
     pub fn is_empty(&self) -> bool {
         return self.a.is_none() || self.row_drained;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiplierArray {
+    multiplier_num: usize,
+    a_eles: Vec<Option<Element>>,
+    b_eles: Vec<Option<Element>>,
+    c_eles: Vec<Option<Element>>,
+    row_drained: Vec<bool>,
+}
+
+impl MultiplierArray {
+    pub fn new(multiplier_num: usize) -> MultiplierArray {
+        MultiplierArray {
+            multiplier_num,
+            a_eles: (0..multiplier_num).map(|_| None).collect_vec(),
+            b_eles: (0..multiplier_num).map(|_| None).collect_vec(),
+            c_eles: (0..multiplier_num).map(|_| None).collect_vec(),
+            row_drained: vec![false; multiplier_num],
+        }
+    }
+
+    pub fn set_as(&mut self, a_eles: Vec<Option<Element>>) {
+        for (idx, a) in a_eles.into_iter().enumerate() {
+            if a.is_some() {
+                self.row_drained[idx] = false;
+            } else {
+                self.row_drained[idx] = true;
+            }
+            self.a_eles[idx] = a;
+        }
+    }
+
+    pub fn set_bs(&mut self, b_eles: Vec<Option<Element>>) {
+        for (idx, b) in b_eles.into_iter().enumerate() {
+            if b.is_some() && b.as_ref().unwrap().idx == [usize::MAX; 2] {
+                self.row_drained[idx] = true;
+                self.b_eles[idx] = None;
+            } else {
+                self.b_eles[idx] = b;
+            }
+        }
+    }
+
+    pub fn retrieve_cs(&mut self) -> Vec<Option<Element>> {
+        return self.c_eles.clone();
+    }
+
+    pub fn multiply(&mut self, group_size: usize) {
+        for idx in 0..self.multiplier_num {
+            if self.b_eles[idx].is_none() {
+                self.c_eles[idx] = None;
+            } else {
+                let b = self.b_eles[idx].as_ref().unwrap();
+                let group_idx = idx / group_size;
+                let mut matched = false;
+                for a_idx in group_idx*group_size..(group_idx+1)*group_size {
+                    if self.a_eles[a_idx].is_none() {
+                        continue;
+                    }
+                    let a = self.a_eles[a_idx].as_ref().unwrap();
+                    if a.idx[1] == b.idx[0] {
+                        self.c_eles[idx] = Some(Element::new([a.idx[0], b.idx[1]], a.value * b.value));
+                    }
+                }
+                if !matched {
+                    panic!("Mistach index: b {}", b.idx[0]);
+                }
+            }
+        }
     }
 }
 
@@ -808,7 +881,7 @@ impl<'a> CycleAccurateSimulator<'a> {
         //     b_col_idx,
         //     rb_num
         // );
-        if !self.fiber_cache.contains_row(&scalar_idx[1]) {
+        if !self.fiber_cache.contains_row(&scalar_idx[1]) && b_col_idx == 0 {
             task.memory_traffic += (self.fiber_cache.mem_latency as f32 * self.word_cycle_chan_bw) as usize
         }
         let elements = if self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
