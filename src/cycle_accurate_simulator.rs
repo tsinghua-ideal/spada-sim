@@ -418,7 +418,8 @@ pub struct CycleAccurateSimulator<'a> {
     scheduler: Scheduler,
     // Storage access latency related.
     pub a_pending_cycle: Vec<usize>,
-    pub word_cycle_bw: f32,
+    pub channel: usize,
+    pub word_cycle_chan_bw: f32,
 }
 
 impl<'a> CycleAccurateSimulator<'a> {
@@ -436,7 +437,8 @@ impl<'a> CycleAccurateSimulator<'a> {
         mem_latency: usize,
         cache_latency: usize,
         freq: f32,
-        bandwidth: f32,
+        channel: usize,
+        bandwidth_per_channel: f32,
     ) -> CycleAccurateSimulator<'a> {
         let var_factor = 1.5;
         let sb_size = 4;
@@ -444,10 +446,9 @@ impl<'a> CycleAccurateSimulator<'a> {
         let pop_num_per_lane = 2;
         let sn_latency = 4;
         let mt_latency = 4;
-        let word_cycle_bw = bandwidth
+        let word_cycle_chan_bw = bandwidth_per_channel
             / freq
-            / word_byte as f32
-            / pe_num as f32;
+            / word_byte as f32;
         CycleAccurateSimulator {
             scheduler: Scheduler::new(
                 pe_num,
@@ -478,7 +479,8 @@ impl<'a> CycleAccurateSimulator<'a> {
             a_matrix,
             exec_cycle: 0,
             a_pending_cycle: vec![0; pe_num],
-            word_cycle_bw,
+            channel,
+            word_cycle_chan_bw,
         }
     }
 
@@ -524,9 +526,10 @@ impl<'a> CycleAccurateSimulator<'a> {
                     // Stat the memory transfer cycle and calc the overlapped latency.
                     if self.pes[pe_idx].mem_finish_cycle.is_none() {
                         self.pes[pe_idx].mem_finish_cycle = self.pes[pe_idx].task.as_ref().map(|t| {
-                            println!("pe: {} cur_cycle: {} start_cycle: {} traffic: {} mem_cycle: {:?}", pe_idx, self.exec_cycle, t.start_cycle, t.memory_traffic, t.start_cycle + (t.memory_traffic as f32 / self.word_cycle_bw) as usize);
+                            println!("pe: {} cur_cycle: {} start_cycle: {} traffic: {} mem_cycle: {:?}",
+                                pe_idx, self.exec_cycle, t.start_cycle, t.memory_traffic, t.start_cycle + (t.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize);
                             println!("anchor: {:?}, shape: {:?}", self.scheduler.window_tracker[&t.window_token].anchor, self.scheduler.window_tracker[&t.window_token].shape);
-                            t.start_cycle + (t.memory_traffic as f32 / self.word_cycle_bw) as usize
+                            t.start_cycle + (t.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize
                             }
                         );
                     }
@@ -785,7 +788,7 @@ impl<'a> CycleAccurateSimulator<'a> {
         if self.pes[pe_idx].task.is_none() {
             return None;
         }
-        let task = self.pes[pe_idx].task.as_ref().unwrap();
+        let task = self.pes[pe_idx].task.as_mut().unwrap();
 
         let window_tracker = self
             .scheduler
@@ -805,6 +808,9 @@ impl<'a> CycleAccurateSimulator<'a> {
         //     b_col_idx,
         //     rb_num
         // );
+        if !self.fiber_cache.contains_row(&scalar_idx[1]) {
+            task.memory_traffic += (self.fiber_cache.mem_latency as f32 * self.word_cycle_chan_bw) as usize
+        }
         let elements = if self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
             match self.fiber_cache.request_consume_scalars(scalar_idx, b_col_idx, rb_num, cur_cycle, true) {
                 Some(es) => {

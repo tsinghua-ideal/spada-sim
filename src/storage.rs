@@ -2845,4 +2845,8 @@ impl<'a> LatencyPriorityCache<'a> {
             }
         }
     }
+
+    pub fn contains_row(&self, row_idx: &usize) -> bool {
+        self.rowmap.contains_key(row_idx)
+    }
 }

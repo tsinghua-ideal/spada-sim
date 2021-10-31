@@ -333,7 +333,8 @@ fn main() {
                 omega_config.mem_latency,
                 omega_config.cache_latency,
                 omega_config.freq,
-                omega_config.bandwidth,
+                omega_config.channel,
+                omega_config.bandwidth_per_channel,
             );
 
             cycle_simu.execute();

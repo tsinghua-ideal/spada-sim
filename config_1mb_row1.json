@@ -10,5 +10,6 @@
     "mem_latency": 100,
     "cache_latency": 0,
     "freq": 1.0,
-    "bandwidth": 128.0
+    "channel": 16,
+    "bandwidth_per_channel": 8.0
 }
