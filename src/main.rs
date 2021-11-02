@@ -315,7 +315,7 @@ fn main() {
             let default_block_shape = match cli.accelerator {
                 Accelerator::Ip => omega_config.block_shape,
                 Accelerator::Omega => [omega_config.block_shape[0], omega_config.block_shape[1]],
-                Accelerator::Op => [usize::MAX, 1],
+                Accelerator::Op => [omega_config.lane_num, 1],
                 Accelerator::NewOmega => omega_config.block_shape,
             };
 
@@ -356,6 +356,7 @@ fn main() {
                 "Cache count: read {} write {}",
                 cache_count[0], cache_count[1]
             );
+            println!("Drained discount cycle: {:?}", cycle_simu.drain_cycles);
 
             println!("-----Output product matrix");
             for idx in 0..min(result.len(), 10) {

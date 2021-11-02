@@ -498,6 +498,91 @@ impl Scheduler {
         return Some(task);
     }
 
+    pub fn new_merge_task(&mut self, cur_cycle: usize) -> Option<Task> {
+        let mut psums = vec![];
+        for (row, psum_addrs) in self.output_tracker.iter_mut() {
+            if psum_addrs.len() >= self.lane_num {
+                for addr in psum_addrs.drain(..2) {
+                    psums.push([*row, addr]);
+                }
+                break;
+            }
+        }
+        if psums.len() == 0 {
+            for frow in self.a_tail_produced.iter() {
+                let frow_len = self.output_tracker[frow].len();
+                if frow_len > 1 {
+                    for addr in self.output_tracker
+                        .get_mut(frow)
+                        .unwrap()
+                        .drain(..min(self.lane_num, frow_len)) {
+                        psums.push([*frow, addr]);
+                    }
+                    break;
+                }
+            }
+        }
+        if psums.len() == 0 {
+            return None;
+        }
+        let blk_token = self.block_token.tik();
+        let win_token = self.window_token.tik();
+        let a_cols_num = vec![psums.len(),];
+        let arow_addr_pairs = vec![[psums[0][0], self.output_addr_token.tik()]];
+        let mut a_eles = psums.iter().map(|p_idx| Some(Element::new(*p_idx, 1.0))).collect::<Vec<_>>();
+        let mut lane2idx = psums.iter().map(|p_idx| Some(*p_idx)).collect::<Vec<_>>();
+        for _ in a_eles.len()..self.lane_num {
+            a_eles.push(None);
+            lane2idx.push(None);
+        }
+        // Create merge task.
+        let task = Task::new(blk_token, win_token, self.lane_num, true, a_eles, cur_cycle);
+        // Register task in each row.
+        for arow_addr in arow_addr_pairs.iter() {
+            if arow_addr[0] != usize::MAX {
+                self.row_rgstr_task
+                    .entry(arow_addr[0])
+                    .or_default()
+                    .add_assign(1);
+            }
+        }
+        // Config block tracker.
+        self.block_tracker.insert(
+            blk_token,
+            BlockTracker::new(
+                blk_token,
+                [0, 0],
+                [1, self.lane_num],
+                true,
+                a_cols_num,
+                vec![false,]
+            )
+        );
+        self.block_tracker
+            .get_mut(&blk_token)
+            .unwrap()
+            .a_cols_assigned[0] += self.lane_num;
+        self.block_tracker
+            .get_mut(&blk_token)
+            .unwrap()
+            .window_tokens
+            .push(win_token);
+        // Config window tracker.
+        self.window_tracker
+            .insert(
+                win_token,
+                WindowTracker::new(
+                    win_token,
+                    [0, 0],
+                    blk_token,
+                    [1, self.lane_num],
+                    lane2idx,
+                    arow_addr_pairs
+                )
+            );
+        return Some(task);
+    }
+
     pub fn next_window(
         &mut self,
         block_token: usize,
