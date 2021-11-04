@@ -16,6 +16,7 @@ mod scheduler;
 mod storage;
 mod storage_traffic_model;
 mod util;
+mod adder_tree;
 
 use std::cmp::min;
 
@@ -321,6 +322,7 @@ fn main() {
 
             let mut cycle_simu = CycleAccurateSimulator::new(
                 omega_config.pe_num,
+                16,
                 omega_config.lane_num,
                 omega_config.cache_size,
                 omega_config.word_byte,

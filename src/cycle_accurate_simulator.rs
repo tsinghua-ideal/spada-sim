@@ -1,5 +1,7 @@
 use itertools::Itertools;
+use std::ops::AddAssign;
 
+use crate::adder_tree::AdderTree;
 use crate::frontend::Accelerator;
 use crate::scheduler::{Scheduler, Task};
 use crate::storage::{
@@ -426,8 +428,11 @@ impl PE {
                 // } else if !self.multipliers[lane_idx].is_empty() {
                 //     tail_flag = min(tail_flag, self.psum_buffers[lane_idx].back().map_or(0, |x| x.idx[1]));
                 // }
+                // } else if !self.multiplier_array.is_empty(lane_idx) {
+                //     tail_flag = min(tail_flag, self.psum_buffers[lane_idx].back().map_or(0, |x| x.idx[1]));
+                // }
                 } else if !self.multiplier_array.is_empty(lane_idx) {
-                    tail_flag = min(tail_flag, self.psum_buffers[lane_idx].back().map_or(0, |x| x.idx[1]));
+                    tail_flag = min(tail_flag, self.multiplier_array.b_eles[lane_idx].as_ref().unwrap().idx[1]);
                 }
                 // Else the row is all emitted, the tail flag can be set to MAX.
                 // trace_println!("update_tail_flags: lane: {} tail_flag: {}", lane_idx, tail_flag);
@@ -569,12 +574,14 @@ impl PE {
 
 pub struct CycleAccurateSimulator<'a> {
     pe_num: usize,
+    adder_tree_num: usize,
     lane_num: usize,
     fiber_cache: LatencyPriorityCache<'a>,
     pes: Vec<PE>,
     a_matrix: &'a mut CsrMatStorage,
     exec_cycle: usize,
     scheduler: Scheduler,
+    adder_trees: Vec<AdderTree>,
     // Storage access latency related.
     pub a_pending_cycle: Vec<usize>,
     pub channel: usize,
@@ -586,6 +593,7 @@ pub struct CycleAccurateSimulator<'a> {
 impl<'a> CycleAccurateSimulator<'a> {
     pub fn new(
         pe_num: usize,
+        adder_tree_num: usize,
         lane_num: usize,
         cache_size: usize,
         word_byte: usize,
@@ -607,6 +615,7 @@ impl<'a> CycleAccurateSimulator<'a> {
         let pop_num_per_lane = 2;
         let sn_latency = 4;
         let mt_latency = 4;
+        let tree_width = 8;
         let word_cycle_chan_bw = bandwidth_per_channel
             / freq
             / word_byte as f32;
@@ -626,6 +635,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                 cache_latency,
             ),
             pe_num,
+            adder_tree_num,
             lane_num,
             fiber_cache: LatencyPriorityCache::new(
                 cache_size,
@@ -637,6 +647,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                 cache_latency,
             ),
             pes: (0..pe_num).map(|pe_idx| PE::new(pe_idx, sb_size, pb_size, lane_num, pop_num_per_lane, sn_latency, mt_latency)).collect::<Vec<PE>>(),
+            adder_trees: (0..adder_tree_num).map(|idx| AdderTree::new(idx, tree_width)).collect_vec(),
             a_matrix,
             exec_cycle: 0,
             a_pending_cycle: vec![0; pe_num],
@@ -680,7 +691,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                 trace_println!("idle: {}", self.pes[pe_idx].idle());
                 // Track drain cycle.
                 if self.pes[pe_idx].task.is_some()
-                && self.pes[pe_idx].drain_cycle.is_none() 
+                && self.pes[pe_idx].drain_cycle.is_none()
                 && self.scheduler.is_window_finished(self.pes[pe_idx].task.as_ref().unwrap().window_token)
                 // && self.pes[pe_idx].stream_buffers.iter().fold(true, |p, fd| p && fd.is_empty())
                 {
@@ -699,6 +710,13 @@ impl<'a> CycleAccurateSimulator<'a> {
                             println!("pe: {} cur_cycle: {} start_cycle: {} traffic: {} mem_cycle: {:?}",
                             pe_idx, self.exec_cycle, t.start_cycle, t.memory_traffic, t.start_cycle + (t.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize);
                             println!("anchor: {:?}, shape: {:?}", self.scheduler.window_tracker[&t.window_token].anchor, self.scheduler.window_tracker[&t.window_token].shape);
+                            println!(
+                                "cache occp: {} in {}, psum_occp: {}, b_occp: {}",
+                                self.fiber_cache.cur_num,
+                                self.fiber_cache.capability,
+                                self.fiber_cache.psum_occp,
+                                self.fiber_cache.b_occp
+                            );
                             t.start_cycle + (t.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize
                         });
                         if self.pes[pe_idx].mem_finish_cycle.is_some() {
@@ -864,11 +882,11 @@ impl<'a> CycleAccurateSimulator<'a> {
                 self.pes[pe_idx].multiplier_array.set_bs(bs);
                 self.pes[pe_idx].multiplier_array.multiply(group_size);
                 for (lane_idx, prod) in prods.into_iter().enumerate() {
-                    trace_println!("lane: {} prod: {:?}", lane_idx, &prod);
                     if prod.is_some() {
                         self.pes[pe_idx].push_psum_buffer(lane_idx, prod.unwrap());
                     }
                     trace_println!("psum buffer: {} {:?} ", lane_idx, &self.pes[pe_idx].psum_buffers[lane_idx]);
+                    trace_println!("lane: {} mult_b: {:?}", lane_idx, &self.pes[pe_idx].multiplier_array.b_eles[lane_idx]);
                 }
 
                 // Collect psum phase.
@@ -945,7 +963,13 @@ impl<'a> CycleAccurateSimulator<'a> {
                 }
             }
 
-            if self.scheduler.a_traversed && self.pes.iter().all(|p| p.idle() && p.task.is_none()) {
+            for idx in 0..self.adder_tree_num {
+                self.adder_tree_exec(idx);
+            }
+
+            if self.scheduler.a_traversed
+            && self.pes.iter().all(|p| p.idle() && p.task.is_none())
+            && self.adder_trees.iter().all(|a| a.idle() && a.task.is_none()) {
                 break;
             }
 
@@ -1212,5 +1236,182 @@ impl<'a> CycleAccurateSimulator<'a> {
         colwise_reg_tracker.miss_size += delta_b;
         colwise_reg_tracker.psum_rw_size[0] += delta_psum;
         colwise_reg_tracker.psum_rw_size[1] += delta_cache;
+    }
+
+    pub fn adder_tree_exec(&mut self, idx: usize) {
+        trace_println!("--adder_tree {}", idx);
+        if (self.adder_trees[idx].task.is_none()
+        || self.scheduler.is_window_finished(self.adder_trees[idx].task.as_ref().unwrap().window_token))
+        && self.adder_trees[idx].idle()
+        {
+            // Collect output psums.
+            if self.adder_trees[idx].task.is_some() {
+                let prev_win_token = self.adder_trees[idx].task.as_ref().unwrap().window_token;
+                for arow_addr in self.scheduler.window_tracker[&prev_win_token].arow_addr_pairs.iter() {
+                    self.scheduler
+                        .row_rgstr_task
+                        .entry(arow_addr[0])
+                        .and_modify(|e| *e -= 1);
+                    if self.scheduler.b_row_lens.contains_key(&arow_addr[1]) {
+                        self.scheduler
+                        .output_tracker
+                        .entry(arow_addr[0])
+                        .and_modify(|ps| {
+                            if !ps.contains(&arow_addr[1]) {
+                                ps.push(arow_addr[1]);
+                            }
+                        })
+                        .or_insert(vec![arow_addr[1]]);
+                    }
+                }
+            }
+            // Collect stats of the prev finished task.
+            if self.adder_trees[idx].task.is_some()
+                && !self.adder_trees[idx].task.as_ref().unwrap().merge_mode
+            {
+                let prev_blk_tk = self.adder_trees[idx].task.as_ref().unwrap().block_token;
+                if self.scheduler.is_block_finished(prev_blk_tk) {
+                    // Label finished rows.
+                    self.scheduler.label_finished_rows(prev_blk_tk);
+                }
+            }
+            // Swapout those finished rows.
+            self.swapout_finished_psums();
+            // Assign new tasks.
+            let task = self
+                .scheduler
+                .assign_in_cache_merge_task(&mut self.adder_trees[idx], &mut self.a_matrix, &self.fiber_cache, self.exec_cycle);
+            self.adder_trees[idx].set_task(task);
+            trace_println!("---pe {} new task: {:?}", idx, &self.adder_trees[idx].task);
+        }
+        if self.adder_trees[idx].task.is_some() {
+            let block_token = self.adder_trees[idx].task.as_ref().unwrap().block_token;
+            let block_tracker = &self.scheduler.block_tracker[&block_token];
+            let window_token = self.adder_trees[idx].task.as_ref().unwrap().window_token;
+            let window_tracker = &self.scheduler.window_tracker[&window_token];
+            trace_println!("-block anchor: {:?} block shape {:?} window anchor: {:?} window shape: {:?}",
+            block_tracker.anchor, block_tracker.shape, window_tracker.anchor, window_tracker.shape);
+            trace_println!("-arow_addr_pairs: {:?}", window_tracker.arow_addr_pairs);
+            trace_print!("-B assigned:");
+            for r_offset in 0..window_tracker.shape[0] {
+                for c_offset in 0..window_tracker.shape[1] {
+                    let lane_pos = r_offset * window_tracker.shape[1] + c_offset;
+                    match window_tracker.lane2idx[lane_pos] {
+                        None => {trace_print!("{:?} None  ", lane_pos);},
+                        Some(idx) => {
+                            let rlen = self.scheduler.b_row_lens[&idx[1]];
+                            trace_print!(
+                                "{:?} asgn:{} len:{}  ",
+                                idx,
+                                window_tracker.b_cols_assigned[lane_pos],
+                                rlen
+                            );
+                        }
+                    }
+                }
+            }
+            trace_println!("");
+        } else {
+            return;
+        }
+        // Stream data from each b row.
+        for lane_idx in 0..self.adder_trees[idx].tree_width {
+            if self.adder_trees[idx].merge_tree.is_leaf_node_empty(lane_idx) {
+                let b = self.stream_b_element(idx, lane_idx, self.exec_cycle);
+                self.adder_trees[idx].merge_tree.push_element(lane_idx, b);
+            }
+        }
+        self.adder_trees[idx].merge_tree.print_merge_tree();
+        // Update merge tree & pop an sorted element.
+        let sb = self.adder_trees[idx].merge_tree.update();
+        // Set b element to multiplier.
+        trace_println!("-mul b {:?}", &sb);
+        let prod = self.adder_trees[idx].multiplier.retrieve_c();
+        self.adder_trees[idx].multiplier.set_b(sb);
+        self.adder_trees[idx].multiplier.multiply();
+        trace_println!("-prod {:?}", prod.as_ref().map(|p| p.idx));
+        // Push prod to the adder.
+        let psum = self.adder_trees[idx].adder.add(prod);
+        trace_println!("-psum: {:?}", psum);
+        // Write back.
+        self.adder_tree_write_psum(idx, psum);
+    }
+
+    pub fn adder_tree_write_psum(&mut self, idx: usize, mut element: Option<Element>) {
+        if self.adder_trees[idx].task.is_none() || element.is_none() {
+            return;
+        }
+        let task = self.adder_trees[idx].task.as_ref().unwrap();
+        let window_tracker = self
+        .scheduler
+        .window_tracker
+        .get(&task.window_token)
+        .unwrap();
+        let arow_addr = window_tracker.arow_addr_pairs[0];
+        element.as_mut().unwrap().idx[0] = arow_addr[1];
+        self.scheduler
+            .b_row_lens
+            .entry(arow_addr[1])
+            .or_default()
+            .add_assign(1);
+        self.fiber_cache.append_element_to(arow_addr[1], element.unwrap());
+        // // Update pending psums.
+        // self.scheduler
+        //     .output_tracker
+        //     .entry(arow_addr[0])
+        //     .and_modify(|ps| {
+        //         if !ps.contains(&arow_addr[1]) {
+        //             ps.push(arow_addr[1])
+        //         }
+        //     })
+        //     .or_insert(vec![arow_addr[1]]);
+    }
+
+    pub fn stream_b_element(
+        &mut self,
+        idx: usize,
+        lane_idx: usize,
+        cur_cycle: usize
+    ) -> Option<Element> {
+        if self.adder_trees[idx].task.is_none() {
+            return Some(Element::new([usize::MAX; 2], 0.0));
+        }
+        let task = self.adder_trees[idx].task.as_mut().unwrap();
+        let window_tracker = self
+            .scheduler
+            .window_tracker
+            .get_mut(&task.window_token)
+            .unwrap();
+        let scalar_idx = window_tracker.lane2idx[lane_idx];
+        if scalar_idx.is_none() {
+            return Some(Element::new([usize::MAX; 2], 0.0));
+        }
+        let scalar_idx = scalar_idx.unwrap();
+        let b_col_idx = window_tracker.b_cols_assigned[lane_idx];
+        let element = if task.merge_mode {
+            self.fiber_cache
+            .request_consume_scalars(scalar_idx, b_col_idx, 1, cur_cycle, true)
+            .map(|mut es| {
+                if es.len() == 0 {
+                    Element::new([usize::MAX; 2], 0.0)
+                } else {
+                    window_tracker.b_cols_assigned[lane_idx] += 1;
+                    es.pop().unwrap()
+                }
+            })
+        } else {
+            self.fiber_cache
+            .request_read_scalars(scalar_idx, b_col_idx, 1, cur_cycle, true)
+            .map(|mut es| {
+                if es.len() == 0 {
+                    Element::new([usize::MAX; 2], 0.0)
+                } else {
+                    window_tracker.b_cols_assigned[lane_idx] += 1;
+                    es.pop().unwrap()
+                }
+            })
+        };
+
+        return element;
     }
 }

@@ -90,6 +90,17 @@ impl CsrRow {
         self.data.extend(csrrow.data.iter());
         self.indptr.extend(csrrow.indptr.iter());
     }
+
+    pub fn append_element(&mut self, element: Element) {
+        assert!(
+            self.rowptr == element.idx[0],
+            "Not the same row ({}, {}), cannot be combined!",
+            self.rowptr,
+            element.idx[0]
+        );
+        self.data.push(element.value);
+        self.indptr.push(element.idx[1]);
+    }
 }
 
 impl fmt::Display for CsrRow {
@@ -582,6 +593,18 @@ impl VectorStorage {
         row_idx: &usize,
     ) -> bool {
         self.data.contains_key(row_idx)
+    }
+
+    pub fn write_element(&mut self, element: Element) -> Result<usize, StorageError> {
+        let indptr = element.idx[0];
+        self.data
+            .entry(indptr)
+            .or_insert(CsrRow::new(indptr))
+            .append_element(element);
+        if self.track_count {
+            self.write_count += 2;
+        }
+        return Ok(indptr);
     }
 }
 
@@ -2848,5 +2871,55 @@ impl<'a> LatencyPriorityCache<'a> {
 
     pub fn contains_row(&self, row_idx: &usize) -> bool {
         self.rowmap.contains_key(row_idx)
+    }
+
+    pub fn append_element_to(&mut self, addr: usize, element: Element) {
+        let element_size = 2;
+        // If the same addr psum is in the cache, append to current one.
+        if self.rowmap.contains_key(&addr) {
+            // Update occp.
+            self.freeup_space(addr, element_size).unwrap();
+            self.cur_num += element_size;
+            if self.is_psum_row(addr) {
+                self.psum_occp += element_size;
+            } else {
+                self.b_occp += element_size;
+            }
+            // Update write count.
+            if self.track_count {
+                self.write_count += element_size;
+            }
+            // Update data.
+            let psum = self.rowmap.get_mut(&addr).unwrap();
+            psum.append_element(element);
+        // If swapped out, direct write the partial psum into psum memory.
+        } else if self.psum_mem.contains_row(&addr) {
+            self.psum_mem.write_element(element);
+        // Otherwise, alloc in cache.
+        } else {
+            // Update priority status.
+            self.valid_pq_row_dict
+                .entry(addr)
+                .and_modify(|x| *x = max(*x, addr))
+                .or_insert(addr);
+            self.priority_queue_push([self.valid_pq_row_dict[&addr], addr]);
+            // Update occp.
+            self.freeup_space(addr, element_size).unwrap();
+            self.cur_num += element_size;
+            if self.is_psum_row(addr) {
+                self.psum_occp += element_size;
+            } else {
+                self.b_occp += element_size;
+            }
+            // Update write_count.
+            if self.track_count {
+                self.write_count += element_size;
+            }
+            // Update data.
+            let mut csrrow = CsrRow::new(element.idx[0]);
+            csrrow.append_element(element);
+            self.rowmap_insert(addr, csrrow);
+        }
+
     }
 }

@@ -7,7 +7,7 @@
     "cache_size": 1048576,
     "word_byte": 8,
     "block_shape": [1, 10000000],
-    "mem_latency": 100,
+    "mem_latency": 30,
     "cache_latency": 0,
     "freq": 1.0,
     "channel": 16,
