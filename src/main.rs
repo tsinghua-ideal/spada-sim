@@ -12,6 +12,7 @@ mod oracle_rowwise_adjust;
 mod preprocessing;
 mod py2rust;
 mod rowwise_adjust;
+mod rowwise_perf_adjust;
 mod scheduler;
 mod storage;
 mod storage_traffic_model;

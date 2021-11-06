@@ -10,6 +10,7 @@ use crate::colwise_reg_adjust::{ColwiseRegBlockAdjustTracker, ColwiseRegBlockInf
 use crate::cycle_accurate_simulator::PE;
 use crate::frontend::Accelerator;
 use crate::rowwise_adjust::{RowwiseAdjustTracker, RowwiseBlockInfo};
+use crate::rowwise_perf_adjust::{RowwiseLatencyAdjustTracker, RowwiseLatencyBlockInfo};
 use crate::storage::{CsrMatStorage, Element};
 use crate::{trace_print, trace_println};
 use crate::storage::LatencyPriorityCache;
@@ -154,6 +155,7 @@ pub struct Scheduler {
     adjust_scheme: usize,
     b_sparsity: f32,
     pub rowwise_adjust_tracker: RowwiseAdjustTracker,
+    pub rowwise_latency_adjust_tracker: RowwiseLatencyAdjustTracker,
     pub colwise_reg_adjust_tracker: ColwiseRegBlockAdjustTracker,
     pub colwise_irr_adjust_tracker: ColwiseIrrBlockAdjustTracker,
     // Assign job related.
@@ -202,7 +204,7 @@ impl Scheduler {
             b_row_lens: (0..b_matrix.row_num())
                 .map(|idx| (idx, b_matrix.get_ele_num(idx, idx + 1)))
                 .collect::<HashMap<usize, usize>>(),
-            adjust_scheme: 0,
+            adjust_scheme: 3,
             b_sparsity,
             block_tracker: HashMap::new(),
             window_tracker: HashMap::new(),
@@ -214,6 +216,9 @@ impl Scheduler {
             a_tail_produced: HashSet::new(),
             a_row_finished: HashSet::new(),
             rowwise_adjust_tracker: RowwiseAdjustTracker::new(
+                lane_num, a_matrix, b_matrix, var_factor,
+            ),
+            rowwise_latency_adjust_tracker: RowwiseLatencyAdjustTracker::new(
                 lane_num, a_matrix, b_matrix, var_factor,
             ),
             colwise_reg_adjust_tracker: ColwiseRegBlockAdjustTracker::new(lane_num),
@@ -799,6 +804,13 @@ impl Scheduler {
                             self.block_shape
                         }
                     }
+                    3 => self.rowwise_latency_adjust_tracker.adjust_block_shape(
+                        block_anchor,
+                        self.row_s,
+                        self.block_shape,
+                        &self.block_topo_tracker,
+                        &self.a_row_lens,
+                    ),
                     _ => panic!("Invalid merge scheme: {}", self.adjust_scheme),
                 }
             }
@@ -819,6 +831,7 @@ impl Scheduler {
                         self.a_row_num,
                         &&self.block_topo_tracker,
                     ),
+                    3 => self.block_shape,
                     _ => panic!("Invalid merge scheme: {}", self.adjust_scheme),
                 }
             }
@@ -843,6 +856,9 @@ impl Scheduler {
                     ),
                     2 => self
                         .colwise_irr_adjust_tracker
+                        .adjust_window_shape(self.block_tracker[&block_token].shape),
+                    3 => self
+                        .rowwise_latency_adjust_tracker
                         .adjust_window_shape(self.block_tracker[&block_token].shape),
                     _ => panic!("Invalid adjust scheme: {}", self.adjust_scheme),
                 }
@@ -881,12 +897,18 @@ impl Scheduler {
         self.rowwise_adjust_tracker
             .block_info
             .insert(token, RowwiseBlockInfo::new(a_ele_num));
+        self.rowwise_latency_adjust_tracker
+            .block_info
+            .insert(token, RowwiseLatencyBlockInfo::new(a_ele_num));
         self.colwise_reg_adjust_tracker
             .block_info
             .insert(token, ColwiseRegBlockInfo::new(a_ele_num));
         self.colwise_irr_adjust_tracker
             .block_info
             .insert(token, ColwiseIrrBlockInfo::new(a_ele_num));
+        self.rowwise_latency_adjust_tracker
+            .block_info
+            .insert(token, RowwiseLatencyBlockInfo::new(a_ele_num));
         // Config block topo tracker.
         self.block_topo_tracker.add_block(token, block_anchor);
     }
@@ -932,6 +954,9 @@ impl Scheduler {
         }
         if psums.len() == 0 {
             for frow in self.a_tail_produced.iter() {
+                if !self.output_tracker.contains_key(frow) {
+                    continue;
+                }
                 let frow_len = self.output_tracker[frow].len();
                 if frow_len > 1
                 && self.output_tracker[frow].iter().all(|addr| fiber_cache.contains_row(addr)){

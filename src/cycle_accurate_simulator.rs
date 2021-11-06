@@ -706,10 +706,11 @@ impl<'a> CycleAccurateSimulator<'a> {
                 {
                     // Stat the memory transfer cycle and calc the overlapped latency.
                     if self.pes[pe_idx].mem_finish_cycle.is_none() {
-                        self.pes[pe_idx].mem_finish_cycle = self.pes[pe_idx].task.as_ref().map(|t| {
+                        if self.pes[pe_idx].task.is_some() {
+                            let task = self.pes[pe_idx].task.as_ref().unwrap();
                             println!("pe: {} cur_cycle: {} start_cycle: {} traffic: {} mem_cycle: {:?}",
-                            pe_idx, self.exec_cycle, t.start_cycle, t.memory_traffic, t.start_cycle + (t.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize);
-                            println!("anchor: {:?}, shape: {:?}", self.scheduler.window_tracker[&t.window_token].anchor, self.scheduler.window_tracker[&t.window_token].shape);
+                            pe_idx, self.exec_cycle, task.start_cycle, task.memory_traffic, task.start_cycle + (task.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize);
+                            println!("anchor: {:?}, shape: {:?}", self.scheduler.window_tracker[&task.window_token].anchor, self.scheduler.window_tracker[&task.window_token].shape);
                             println!(
                                 "cache occp: {} in {}, psum_occp: {}, b_occp: {}",
                                 self.fiber_cache.cur_num,
@@ -717,8 +718,22 @@ impl<'a> CycleAccurateSimulator<'a> {
                                 self.fiber_cache.psum_occp,
                                 self.fiber_cache.b_occp
                             );
-                            t.start_cycle + (t.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize
-                        });
+                            if !task.merge_mode {
+                                let latency = max(self.exec_cycle - task.start_cycle, (task.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize);
+                                self.scheduler
+                                    .rowwise_latency_adjust_tracker
+                                    .block_info
+                                    .get_mut(&task.block_token)
+                                    .unwrap()
+                                    .latency
+                                    .add_assign(latency);
+                            }
+                            self.pes[pe_idx].mem_finish_cycle = Some(task.start_cycle + (task.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize);
+
+                        } else {
+                            self.pes[pe_idx].mem_finish_cycle = None;
+                        }
+                        
                         if self.pes[pe_idx].mem_finish_cycle.is_some() {
                             // Add to discount drain cycle.
                             let drain_cycle = if self.pes[pe_idx].drain_cycle.is_some() {
@@ -771,6 +786,9 @@ impl<'a> CycleAccurateSimulator<'a> {
                                     let block_tracker = &self.scheduler.block_tracker[&prev_blk_tk];
                                     self.scheduler
                                         .rowwise_adjust_tracker
+                                        .update_group_cost(block_tracker);
+                                    self.scheduler
+                                        .rowwise_latency_adjust_tracker
                                         .update_group_cost(block_tracker);
                                 }
                                 _ => {}
@@ -940,16 +958,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                         - prev_cache_ws[pe_idx];
                     // Update block tracker.
                     if !self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
-                        self.update_adjust_tracker(blk_token, delta_b, delta_psum, delta_cache);
-                        let tracker = self
-                            .scheduler
-                            .rowwise_adjust_tracker
-                            .block_info
-                            .get_mut(&blk_token)
-                            .unwrap();
-                        tracker.miss_size += delta_b;
-                        tracker.psum_rw_size[0] += delta_psum;
-                        tracker.psum_rw_size[1] += delta_cache;
+                        self.update_energy_adjust_tracker(blk_token, delta_b, delta_psum, delta_cache);
                     }
                 }
 
@@ -1140,11 +1149,11 @@ impl<'a> CycleAccurateSimulator<'a> {
             .collect::<Vec<usize>>();
         trace_println!("swapable_row: {:?}", &swapable_rows);
         for row in swapable_rows {
-            if !self.fiber_cache.rowmap.contains_key(&output_tracker[&row][0]) {
-                continue;
+            if output_tracker.contains_key(&row)
+            && self.fiber_cache.rowmap.contains_key(&output_tracker[&row][0]) {
+                self.fiber_cache.swapout(output_tracker[&row][0]);
+                self.scheduler.a_row_finished.insert(row);
             }
-            self.fiber_cache.swapout(output_tracker[&row][0]);
-            self.scheduler.a_row_finished.insert(row);
         }
     }
 
@@ -1184,24 +1193,26 @@ impl<'a> CycleAccurateSimulator<'a> {
                 } else {
                     rowid
                 };
-                let addrs = self.scheduler.output_tracker.get(&rowid).unwrap();
-                trace_println!(
-                    "Get result: row: {} row len: {}",
-                    raw_rowid,
-                    self.fiber_cache.psum_mem.data[&addrs[0]].size() / 2
-                );
-                assert!(
-                    addrs.len() == 1,
-                    "Partially merged psums! {:?} of row {}",
-                    &addrs,
-                    raw_rowid
-                );
-                let addr = addrs[0];
-                csrrow = match self.fiber_cache.psum_mem.data.get(&addr) {
-                    Some(row) => row.clone(),
-                    None => self.fiber_cache.rowmap.get(&addr).unwrap().clone(),
-                };
-                csrrow.rowptr = raw_rowid;
+                if self.scheduler.output_tracker.contains_key(&rowid) {
+                    let addrs = self.scheduler.output_tracker.get(&rowid).unwrap();
+                    trace_println!(
+                        "Get result: row: {} row len: {}",
+                        raw_rowid,
+                        self.fiber_cache.psum_mem.data[&addrs[0]].size() / 2
+                    );
+                    assert!(
+                        addrs.len() == 1,
+                        "Partially merged psums! {:?} of row {}",
+                        &addrs,
+                        raw_rowid
+                    );
+                    let addr = addrs[0];
+                    csrrow = match self.fiber_cache.psum_mem.data.get(&addr) {
+                        Some(row) => row.clone(),
+                        None => self.fiber_cache.rowmap.get(&addr).unwrap().clone(),
+                    };
+                    csrrow.rowptr = raw_rowid;
+                }
             }
             c.push(csrrow);
         }
@@ -1209,7 +1220,7 @@ impl<'a> CycleAccurateSimulator<'a> {
         return c;
     }
 
-    pub fn update_adjust_tracker(
+    pub fn update_energy_adjust_tracker(
         &mut self,
         block_token: usize,
         delta_b: usize,
