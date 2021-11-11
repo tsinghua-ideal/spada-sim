@@ -36,7 +36,7 @@ arg_enum! {
     pub enum Accelerator {
         Ip,
         Op,
-        Omega,
+        MultiRow,
         NewOmega,
     }
 }

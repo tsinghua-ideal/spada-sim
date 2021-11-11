@@ -167,7 +167,8 @@ pub struct Scheduler {
     window_token: Token,
     block_token: Token,
     pub a_tail_produced: HashSet<usize>,
-    pub a_row_finished: HashSet<usize>,
+    // pub a_row_finished: HashSet<usize>,
+    pub a_row_finished: HashMap<usize, usize>,
     pub a_cols_assigned: Vec<usize>,
     pub a_cols_produced: HashMap<usize, usize>,
     pub row_rgstr_task: HashMap<usize, usize>,
@@ -214,7 +215,8 @@ impl Scheduler {
             window_token: Token::new(),
             block_token: Token::new(),
             a_tail_produced: HashSet::new(),
-            a_row_finished: HashSet::new(),
+            // a_row_finished: HashSet::new(),
+            a_row_finished: HashMap::new(),
             rowwise_adjust_tracker: RowwiseAdjustTracker::new(
                 lane_num, a_matrix, b_matrix, var_factor,
             ),
@@ -306,7 +308,7 @@ impl Scheduler {
         if !block_tracker.is_merge_block {
             for (offset, is_tail) in block_tracker.is_tail.iter().enumerate() {
                 let rowidx = offset + block_tracker.anchor[0];
-                if *is_tail && !self.a_row_finished.contains(&rowidx) {
+                if *is_tail && !self.a_row_finished.contains_key(&rowidx) {
                     self.a_tail_produced.insert(rowidx);
                 }
             }
@@ -778,7 +780,7 @@ impl Scheduler {
 
     pub fn adjust_block_row(&mut self, block_anchor: [usize; 2]) {
         match self.accelerator {
-            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
+            Accelerator::Ip | Accelerator::MultiRow | Accelerator::Op => {
                 return;
             }
             Accelerator::NewOmega => {
@@ -819,7 +821,7 @@ impl Scheduler {
 
     pub fn adjust_block_col(&mut self, block_anchor: [usize; 2]) {
         match self.accelerator {
-            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
+            Accelerator::Ip | Accelerator::MultiRow | Accelerator::Op => {
                 return;
             }
             Accelerator::NewOmega => {
@@ -840,7 +842,7 @@ impl Scheduler {
 
     pub fn adjust_window(&mut self, block_token: usize) -> [usize; 2] {
         match self.accelerator {
-            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
+            Accelerator::Ip | Accelerator::MultiRow | Accelerator::Op => {
                 return [self.block_shape[0], self.lane_num / self.block_shape[0]];
             }
             Accelerator::NewOmega => {

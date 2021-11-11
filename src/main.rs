@@ -99,13 +99,13 @@ fn main() {
             // Determine the default window & block shape.
             let default_block_shape = match cli.accelerator {
                 Accelerator::Ip => [omega_config.lane_num, 1],
-                Accelerator::Omega => [omega_config.block_shape[0], omega_config.block_shape[1]],
+                Accelerator::MultiRow => [omega_config.block_shape[0], omega_config.block_shape[1]],
                 Accelerator::Op => [1, usize::MAX],
                 Accelerator::NewOmega => [omega_config.block_shape[0], omega_config.block_shape[1]],
             };
 
             let default_reduction_window = match cli.accelerator {
-                Accelerator::Ip | Accelerator::Omega | Accelerator::NewOmega => [
+                Accelerator::Ip | Accelerator::MultiRow | Accelerator::NewOmega => [
                     omega_config.lane_num / omega_config.block_shape[1],
                     omega_config.block_shape[1],
                 ],
@@ -316,7 +316,7 @@ fn main() {
             // Determine the default window & block shape.
             let default_block_shape = match cli.accelerator {
                 Accelerator::Ip => omega_config.block_shape,
-                Accelerator::Omega => [omega_config.block_shape[0], omega_config.block_shape[1]],
+                Accelerator::MultiRow => [omega_config.block_shape[0], omega_config.block_shape[1]],
                 Accelerator::Op => [omega_config.lane_num, 1],
                 Accelerator::NewOmega => omega_config.block_shape,
             };

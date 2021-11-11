@@ -1149,10 +1149,18 @@ impl<'a> CycleAccurateSimulator<'a> {
             .collect::<Vec<usize>>();
         trace_println!("swapable_row: {:?}", &swapable_rows);
         for row in swapable_rows {
-            if output_tracker.contains_key(&row)
-            && self.fiber_cache.rowmap.contains_key(&output_tracker[&row][0]) {
-                self.fiber_cache.swapout(output_tracker[&row][0]);
-                self.scheduler.a_row_finished.insert(row);
+            // if output_tracker.contains_key(&row)
+            // && self.fiber_cache.rowmap.contains_key(&output_tracker[&row][0]) {
+            //     self.fiber_cache.swapout(output_tracker[&row][0]);
+            //     self.scheduler.a_row_finished.insert(row, output_tracker[&row][0]);
+            // }
+            if output_tracker.contains_key(&row) {
+                let addr = output_tracker[&row][0];
+                self.scheduler.a_row_finished.insert(row, addr);
+                output_tracker.remove(&row);
+                if self.fiber_cache.rowmap.contains_key(&addr) {
+                    self.fiber_cache.swapout(addr);
+                }
             }
         }
     }
@@ -1193,20 +1201,20 @@ impl<'a> CycleAccurateSimulator<'a> {
                 } else {
                     rowid
                 };
-                if self.scheduler.output_tracker.contains_key(&rowid) {
-                    let addrs = self.scheduler.output_tracker.get(&rowid).unwrap();
+                if self.scheduler.a_row_finished.contains_key(&rowid) {
+                    let addr = self.scheduler.a_row_finished.get(&rowid).unwrap();
                     trace_println!(
                         "Get result: row: {} row len: {}",
                         raw_rowid,
-                        self.fiber_cache.psum_mem.data[&addrs[0]].size() / 2
+                        self.fiber_cache.psum_mem.data[&addr].size() / 2
                     );
-                    assert!(
-                        addrs.len() == 1,
-                        "Partially merged psums! {:?} of row {}",
-                        &addrs,
-                        raw_rowid
-                    );
-                    let addr = addrs[0];
+                    // assert!(
+                    //     addrs.len() == 1,
+                    //     "Partially merged psums! {:?} of row {}",
+                    //     &addrs,
+                    //     raw_rowid
+                    // );
+                    // let addr = addrs[0];
                     csrrow = match self.fiber_cache.psum_mem.data.get(&addr) {
                         Some(row) => row.clone(),
                         None => self.fiber_cache.rowmap.get(&addr).unwrap().clone(),

@@ -9,6 +9,7 @@ ss7=('t2d_q4' 't2d_q9' 't2em' 't3dh_a' 't3dh_e' 't3dh' 't3dl_a' 't3dl_e' 't3dl' 
 ss8=('ASIC_680k' 'as-Skitter' 'BenElechi1' 'bmw3_2' 'bmw7st_1' 'bmwcra_1' 'boneS10' 'Chebyshev4' 'CO' 'cont11_l' 'cont1_l' 'crankseg_1' 'crankseg_2' 'degme' 'ESOC' 'FEM_3D_thermal2' 'flickr' 'G3_circuit' 'Ga19As19H42' 'Ge87H76' 'GL7d22' 'Hamrle3' 'hood' 'human_gene2' 'laminar_duct3D' 'largebasis' 'm_t1' 'nd6k' 'para-4' 'pre2' 'pwtk' 'rail2586' 'rail4284' 'rajat29' 'rajat30' 'shipsec5' 'Si87H76' 'SiO2' 'sls' 'thermal2' 'tmt_unsym' 'torso3' 'tp-6' 'TSOPF_FS_b300_c2' 'TSOPF_RS_b300_c3' 'TSOPF_RS_b678_c1' 'x104' 'xenon2')
 ss_pref_g=('poisson3Da' 'filter3D' 'wiki-Vote' 'email-Enron' 'ca-CondMat' 'gupta2' 'Ge87H76' 'raefsky3' 'x104' 'm_t1' 'ship_001' 'msc10848' 'EternityII_Etilde' 'opt1' 'ramage02' 'nemsemm1')
 ss_pref_s=('bas1lp' 'bibd_16_8' 'bundle1' 'c-64' 'c8_mat11' 'cari' 'dbir2' 'exdata_1' 'fem_filter' 'Ga10As10H30' 'heart1' 'HFE18_96_in' 'jendrec1' 'lp_fit2d' 'nd3k' 'nsct' 'orani678' 'psmigr_2' 'Si34H36' 'SiO' 'std1_Jac3' 'Trec13' 'TSOPF_FS_b162_c1' 'Zd_Jac3')
+nn=('alexnetconv0' 'alexnetconv1' 'alexnetconv2' 'alexnetconv3' 'alexnetconv4' 'alexnetfc0' 'alexnetfc1' 'alexnetfc2' 'resnet50conv0' 'resnet50layer1_conv1' 'resnet50layer1_conv2' 'resnet50layer1_conv3' 'resnet50layer2_conv1' 'resnet50layer2_conv2' 'resnet50layer2_conv3' 'resnet50layer3_conv1' 'resnet50layer3_conv2' 'resnet50layer3_conv3' 'resnet50layer4_conv1' 'resnet50layer4_conv2' 'resnet50layer4_conv3' 'resnet50fc')
 echo "----Sweep suitesparse workloads----"
 echo "Use $1 on $2"
 echo "Write output to $3"
@@ -128,6 +129,11 @@ elif [[ "$2" == "ss_pref_s" ]]; then
     rm job2run/$1_${s}_ss_pref_s_job2run
     for i in "${ss_pref_s[@]}"; do
         echo "./target/debug/omega-sim accuratesimu $1 ss $i $4 > ${3}/ss_pref_s/${1}_${i}.log 2>&1" >> job2run/$1_${s}_ss_pref_s_job2run
+    done
+elif [[ "$2" == "nn" ]]; then
+    rm job2run/$1_${s}_alex_res50_job2run
+    for i in "${nn[@]}"; do
+        echo "./target/debug/omega-sim accuratesimu $1 nn $i $4 > ${3}/nn/${1}_${i}.log 2>&1" >> job2run/$1_${s}_alex_res50_job2run
     done
 else
     echo "Invalid workload type $2."

@@ -2,9 +2,14 @@
     "ss_filepath": "../adaptive_sparse_accelerator/workload/suitesparse_matrices/all",
     "nn_filepath": "../adaptive_sparse_accelerator/workload/pickled_gemms/NN_gemms_02_01_21_31.pkl",
     "desired_filepath": "../adaptive_sparse_accelerator/workload/pickled_gemms/Desired_gemms_06_05_11_08.pkl",
-    "pe_num": 1,
+    "pe_num": 2,
     "lane_num": 8,
-    "cache_size": 1048576,
+    "cache_size": 1572864,
     "word_byte": 8,
-    "block_shape": [10000000, 4]
+    "block_shape": [4, 10000000],
+    "mem_latency": 30,
+    "cache_latency": 0,
+    "freq": 1.0,
+    "channel": 16,
+    "bandwidth_per_channel": 8.0
 }

@@ -879,7 +879,7 @@ impl<'a> TrafficModel<'a> {
     /// For now we only support adjust block when finishing traverse over K dim.
     fn adjust_block(&mut self, cur_idx: [usize; 2]) {
         match self.accelerator {
-            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
+            Accelerator::Ip | Accelerator::MultiRow | Accelerator::Op => {
                 // First check if the row group changed.
                 if self.a_group.rgmap[&self.row_s] != self.row_group {
                     self.row_group = self.a_group.rgmap[&self.row_s];
@@ -1519,7 +1519,7 @@ impl<'a> TrafficModel<'a> {
 
         match self.accelerator {
             Accelerator::NewOmega => [self.lane_num / self.block_shape[1], self.block_shape[1]],
-            Accelerator::Ip | Accelerator::Omega | Accelerator::Op => {
+            Accelerator::Ip | Accelerator::MultiRow | Accelerator::Op => {
                 let mut reduction_window: [usize; 2];
                 // // window adjust scheme 0 that reduction window is decoupled from block.
                 // let neighbor_blocks = self.get_neighbor_blocks(&cur_idx);
