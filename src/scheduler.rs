@@ -781,7 +781,9 @@ impl Scheduler {
     pub fn adjust_block_row(&mut self, block_anchor: [usize; 2]) {
         match self.accelerator {
             Accelerator::Ip | Accelerator::MultiRow | Accelerator::Op => {
-                return;
+                while self.row_s + self.block_shape[0] > self.a_row_num {
+                    self.block_shape[0] = max(1, self.block_shape[0] / 2);
+                }
             }
             Accelerator::NewOmega => {
                 self.block_shape = match self.adjust_scheme {
@@ -822,7 +824,9 @@ impl Scheduler {
     pub fn adjust_block_col(&mut self, block_anchor: [usize; 2]) {
         match self.accelerator {
             Accelerator::Ip | Accelerator::MultiRow | Accelerator::Op => {
-                return;
+                while self.row_s + self.block_shape[0] > self.a_row_num {
+                    self.block_shape[0] = max(1, self.block_shape[0] / 2);
+                }
             }
             Accelerator::NewOmega => {
                 self.block_shape = match self.adjust_scheme {
