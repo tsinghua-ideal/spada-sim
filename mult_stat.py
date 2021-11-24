@@ -73,6 +73,7 @@ for w in ss_pref_s:
 for w in nn:
     retrieve_pickled_csr(nn_filepath, w)
 
+retrieve_mm_mat(ss_filepath, 'lpi_forest6')
 
 print("-----")
 print(matrix_mult)
