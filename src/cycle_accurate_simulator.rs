@@ -38,95 +38,6 @@ pub fn merge_idx(a: &VecDeque<Element>, b: &VecDeque<Element>, merge_num: usize)
 }
 
 #[derive(Debug, Clone)]
-pub struct Multiplier {
-    a: Option<Element>,
-    b: Option<Element>,
-    c: Option<Element>,
-    row_drained: bool,
-}
-
-impl Multiplier {
-    pub fn new() -> Multiplier {
-        Multiplier {
-            a: None,
-            b: None,
-            c: None,
-            row_drained: false,
-        }
-    }
-
-    pub fn set_a(&mut self, a: Option<Element>) {
-        if a.is_some() {
-            self.row_drained = false;
-        } else {
-            self.row_drained = true;
-        }
-        self.a = a;
-    }
-
-    pub fn set_b(&mut self, b: Option<Element>) {
-        // if b.is_none() {
-        //     self.b = None;
-        // } else if b.is_some() && b.as_ref().unwrap().idx == [usize::MAX; 2] {
-        //     self.row_drained = true;
-        //     self.b = None;
-        // } else {
-        //     self.b = b;
-        // }
-        if b.is_some() && b.as_ref().unwrap().idx == [usize::MAX; 2] {
-            self.row_drained = true;
-            self.b = None;
-        } else {
-            self.b = b;
-        }
-    }
-
-    pub fn retrieve_c(&mut self) -> Option<Element> {
-        return self.c.clone();
-    }
-
-    pub fn multiply(&mut self) {
-        if self.a.is_none() || self.b.is_none() {
-            self.c = None;
-        } else {
-            let a = self.a.as_ref().unwrap();
-            let b = self.b.as_ref().unwrap();
-            if a.idx[1] == b.idx[0] {
-                self.c = Some(Element::new([a.idx[0], b.idx[1]], a.value * b.value));
-            } else {
-                panic!("Mistach index: a {} b {}", a.idx[1], b.idx[0]);
-            }
-        }
-    }
-
-    pub fn a_idx(&self) -> [usize; 2] {
-        if self.a.is_none() {
-            return [usize::MAX; 2];
-        } else {
-            return self.a.as_ref().unwrap().idx;
-        }
-    }
-
-    pub fn b_idx(&self) -> [usize; 2] {
-        if self.b.is_none() {
-            return [usize::MAX; 2];
-        } else {
-            return self.b.as_ref().unwrap().idx;
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.a = None;
-        self.b = None;
-        self.c = None;
-    }
-
-    pub fn is_empty(&self) -> bool {
-        return self.a.is_none() || self.row_drained;
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct MultiplierArray {
     multiplier_num: usize,
     pub a_eles: Vec<Option<Element>>,
@@ -214,7 +125,6 @@ pub struct SortingNetwork {
 
 impl SortingNetwork {
     pub fn new(
-        lane_num: usize,
         group_lane_num: usize,
         ele_per_lane: usize,
         latency: usize,
@@ -263,10 +173,6 @@ impl SortingNetwork {
         return sorted_results;
     }
 
-    pub fn reset(&mut self) {
-        self.elements.clear();
-        self.latency_counter.clear();
-    }
 
     pub fn is_empty(&self) -> bool {
         return self.elements.len() == 0;
@@ -328,11 +234,6 @@ impl MergeTree {
         return merged_results;
     }
 
-    pub fn reset(&mut self) {
-        self.elements.clear();
-        self.latency_counter.clear();
-    }
-
     pub fn is_empty(&self) -> bool {
         return self.elements.len() == 0;
     }
@@ -342,7 +243,6 @@ impl MergeTree {
 pub struct PE {
     // HW components.
     pub stream_buffers: Vec<VecDeque<Element>>,
-    pub multipliers: Vec<Multiplier>,
     pub multiplier_array: MultiplierArray,
     pub psum_buffers: Vec<VecDeque<Element>>,
     pub sorting_network: SortingNetwork,
@@ -376,10 +276,9 @@ impl PE {
     ) -> PE {
         PE {
             stream_buffers: vec![VecDeque::new(); lane_num],
-            multipliers: vec![Multiplier::new(); lane_num],
             multiplier_array: MultiplierArray::new(lane_num),
             psum_buffers: vec![VecDeque::new(); lane_num],
-            sorting_network: SortingNetwork::new(lane_num, lane_num, pop_num_per_lane, sn_latency),
+            sorting_network: SortingNetwork::new(lane_num, pop_num_per_lane, sn_latency),
             merge_tree: MergeTree::new(mt_latency),
             stream_buffer_size: sb_size,
             psum_buffer_size: pb_size,
@@ -401,10 +300,6 @@ impl PE {
             .stream_buffers
             .iter()
             .fold(true, |p, fd| p && fd.is_empty())
-            // && self
-            //     .multipliers
-            //     .iter()
-            //     .fold(true, |p, fd| p && fd.is_empty())
             && (0..self.lane_num).fold(true, |p, l| p && self.multiplier_array.is_empty(l))
             && self
                 .psum_buffers
@@ -455,35 +350,6 @@ impl PE {
         }
     }
 
-    pub fn old_pop_stream_buffer(&mut self, lane_idx: usize) -> Option<Element> {
-        if self.task.is_none() || self.full_flags[lane_idx] {
-            return None;
-        }
-
-        let group_size = self.task.as_ref().unwrap().group_size;
-        if lane_idx == 0 {
-            self.stream_buffers[lane_idx].pop_front()
-        } else if self.look_aside && (lane_idx - 1) / group_size == lane_idx / group_size {
-            let (ab_sb, sb) = self.stream_buffers.split_at_mut(lane_idx);
-            let ab_sb = ab_sb.last_mut().unwrap();
-            let sb = sb.get_mut(0).unwrap();
-
-            if ab_sb.len() <= 1 {
-                sb.pop_front()
-            } else if sb.len() == 0 {
-                ab_sb.pop_front()
-            } else {
-                if ab_sb[1].idx[1] < sb[0].idx[1] {
-                    ab_sb.pop_front()
-                } else {
-                    sb.pop_front()
-                }
-            }
-        } else {
-            self.stream_buffers[lane_idx].pop_front()
-        }
-    }
-
     pub fn pop_stream_buffer(&mut self, lane_idx: usize) -> Option<Element> {
         if self.task.is_none() || self.full_flags[lane_idx] {
             return None;
@@ -523,28 +389,6 @@ impl PE {
         }
 
         return psums;
-    }
-
-    pub fn old_set_task(&mut self, task: Option<(usize, Task)>) -> usize {
-        if task.is_none() {
-            for lane_idx in 0..self.lane_num {
-                self.multipliers[lane_idx].set_a(None);
-            }
-            // Pb, sn, mt remain the previous configuration.
-            self.mem_finish_cycle = None;
-            self.task = None;
-            return 0;
-        } else {
-            let (a_latency, task) = task.unwrap();
-            self.task = Some(task.clone());
-            self.sorting_network.group_lane_num = task.group_size;
-            for (lane_idx, e) in task.a_eles.into_iter().enumerate() {
-                self.sb_drained[lane_idx] = e.is_none();
-                self.multipliers[lane_idx].set_a(e);
-            }
-            self.mem_finish_cycle = None;
-            return a_latency;
-        }
     }
 
     pub fn set_task(&mut self, task: Option<(usize, Task)>) -> usize {
@@ -625,8 +469,6 @@ impl<'a> CycleAccurateSimulator<'a> {
                 lane_num,
                 default_block_shape,
                 output_base_addr,
-                1.0 - b_matrix.data.len() as f32
-                    / (b_matrix.row_num() * b_matrix.mat_shape[0]) as f32,
                 a_matrix,
                 b_matrix,
                 var_factor,
@@ -781,7 +623,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                             // Label finished rows.
                             self.scheduler.label_finished_rows(prev_blk_tk);
                             match self.scheduler.accelerator {
-                                Accelerator::NewOmega => {
+                                Accelerator::Spada => {
                                     // Update the rowwise adjust tracker.
                                     let block_tracker = &self.scheduler.block_tracker[&prev_blk_tk];
                                     self.scheduler
@@ -1299,7 +1141,7 @@ impl<'a> CycleAccurateSimulator<'a> {
             // Assign new tasks.
             let task = self
                 .scheduler
-                .assign_in_cache_merge_task(&mut self.adder_trees[idx], &mut self.a_matrix, &self.fiber_cache, self.exec_cycle);
+                .assign_in_cache_merge_task(&mut self.adder_trees[idx], &self.fiber_cache, self.exec_cycle);
             self.adder_trees[idx].set_task(task);
             trace_println!("---pe {} new task: {:?}", idx, &self.adder_trees[idx].task);
         }

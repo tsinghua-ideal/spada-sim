@@ -135,7 +135,7 @@ impl RowwiseAdjustTracker {
         // Separately treat wide groups and narrow groups.
         let group_diviser = 128;
         let sample_num = 4;
-        let mut min_row_num = 1;
+        let mut min_row_num;
 
         trace_println!(
             "rgmap: {} cur_group: {}",

@@ -1,9 +1,6 @@
 use crate::block_topo_tracker::BlockTopoTracker;
-use crate::colwise_reg_adjust::ColwiseRegBlockAdjustTracker;
-use crate::scheduler::BlockTracker;
-use crate::storage::CsrMatStorage;
 use crate::trace_println;
-use std::cmp::{max, min};
+use std::cmp::max;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]

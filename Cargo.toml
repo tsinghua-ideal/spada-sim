@@ -1,5 +1,5 @@
 [package]
-name = "omega-sim"
+name = "spada-sim"
 version = "0.1.0"
 authors = ["pingziwalk <16973185+Pingziwalk@users.noreply.github.com>"]
 edition = "2018"

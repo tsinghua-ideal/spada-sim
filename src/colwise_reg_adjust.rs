@@ -1,6 +1,4 @@
 use crate::block_topo_tracker::BlockTopoTracker;
-use crate::scheduler::BlockTracker;
-use crate::storage::CsrMatStorage;
 use crate::trace_println;
 use std::cmp::{max, min};
 use std::collections::HashMap;
@@ -76,7 +74,7 @@ impl ColwiseRegBlockAdjustTracker {
             self.window_shape.insert(block_token, window_shape);
             return window_shape;
         }
-        let (n2_token, n2_block) = n2_tk_acr.unwrap();
+        let (n2_token, _n2_block) = n2_tk_acr.unwrap();
         let n1_block_info = self.block_info.get(&n1_token).unwrap();
         let n1_ele_size = n1_block_info.a_ele_num;
         let n1_cost = (n1_block_info.miss_size + n1_block_info.psum_rw_size[0]) * 100

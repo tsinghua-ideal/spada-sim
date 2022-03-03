@@ -112,18 +112,6 @@ impl MergeTree {
         }
     }
 
-    pub fn old_reset(&mut self, merge_num: usize) {
-        for lvl in 0..self.tree_depth+1 {
-            for node in 0..2usize.pow(lvl as u32) {
-                self.drained[lvl][node] = false;
-            }
-        }
-
-        for node in merge_num..2usize.pow(self.tree_depth as u32) {
-            self.drained[self.tree_depth][node] = true;
-        }
-    }
-
     pub fn reset(&mut self) {
         for lvl in 0..self.tree_depth+1 {
             for node in 0..2usize.pow(lvl as u32) {
