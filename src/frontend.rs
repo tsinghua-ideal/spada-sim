@@ -10,6 +10,7 @@ pub struct OmegaConfig {
     pub ss_filepath: String,
     pub nn_filepath: String,
     pub pe_num: usize,
+    pub at_num: usize,
     pub lane_num: usize,
     pub cache_size: usize,
     pub word_byte: usize,

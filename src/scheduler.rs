@@ -281,11 +281,11 @@ impl Scheduler {
 
     pub fn is_block_finished(&mut self, block_token: usize) -> bool {
         let block_tracker = self.block_tracker.get(&block_token).unwrap();
-        trace_println!(
-            "block_tracker: {:?}, {:?}",
-            &block_tracker.a_cols_assigned,
-            &block_tracker.a_cols_num
-        );
+        // trace_println!(
+        //     "block_tracker: {:?}, {:?}",
+        //     &block_tracker.a_cols_assigned,
+        //     &block_tracker.a_cols_num
+        // );
         for (c, l) in block_tracker
             .a_cols_assigned
             .iter()
@@ -401,11 +401,11 @@ impl Scheduler {
         let mut pnum = 0;
 
         // If `lane_num / 2` pairs of psums are found, the a merge block is ready.
-        trace_println!("output_tracker: {:?}",
-            &self.output_tracker
-            .iter()
-            .filter(|(_, v)| v.len() > 1)
-            .collect::<Vec<_>>());
+        // trace_println!("output_tracker: {:?}",
+        //     &self.output_tracker
+        //     .iter()
+        //     .filter(|(_, v)| v.len() > 1)
+        //     .collect::<Vec<_>>());
         for psum_addrs in self.output_tracker.values() {
             if pnum >= self.lane_num / 2 {
                 break;
@@ -580,14 +580,14 @@ impl Scheduler {
             let ele_len = element.len();
             // Increase assigned a col elements.
             let block_tracker = self.block_tracker.get_mut(&block_token).unwrap();
-            trace_println!("a_cols_assigned: {:?}", block_tracker.a_cols_assigned);
-            trace_println!(
-                "win_anchor: {:?}, win_shape: {:?}, block_anchor: {:?}, block_shape: {:?}",
-                &window_anchor,
-                &window_shape,
-                &block_anchor,
-                &block_tracker.shape
-            );
+            // trace_println!("a_cols_assigned: {:?}", block_tracker.a_cols_assigned);
+            // trace_println!(
+            //     "win_anchor: {:?}, win_shape: {:?}, block_anchor: {:?}, block_shape: {:?}",
+            //     &window_anchor,
+            //     &window_shape,
+            //     &block_anchor,
+            //     &block_tracker.shape
+            // );
             block_tracker.a_cols_assigned[r_idx - block_anchor[0]] += ele_len;
             for mut e in element {
                 lane2idx.push(Some(e.idx));

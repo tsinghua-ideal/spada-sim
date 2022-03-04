@@ -74,7 +74,7 @@ fn main() {
 
             let mut cycle_simu = CycleAccurateSimulator::new(
                 spada_config.pe_num,
-                16,
+                spada_config.at_num,
                 spada_config.lane_num,
                 spada_config.cache_size,
                 spada_config.word_byte,
