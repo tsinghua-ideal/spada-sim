@@ -12,6 +12,9 @@ ss_pref_s=('bas1lp' 'bibd_16_8' 'bundle1' 'c-64' 'c8_mat11' 'cari' 'dbir2' 'exda
 nn=('alexnetconv0' 'alexnetconv1' 'alexnetconv2' 'alexnetconv3' 'alexnetconv4' 'alexnetfc0' 'alexnetfc1' 'alexnetfc2' 'resnet50conv0' 'resnet50layer1_conv1' 'resnet50layer1_conv2' 'resnet50layer1_conv3' 'resnet50layer2_conv1' 'resnet50layer2_conv2' 'resnet50layer2_conv3' 'resnet50layer3_conv1' 'resnet50layer3_conv2' 'resnet50layer3_conv3' 'resnet50layer4_conv1' 'resnet50layer4_conv2' 'resnet50layer4_conv3' 'resnet50fc')
 spada_ss=('ca-CondMat' 'poisson3Da' 'nemsemm1' 'EternityII_Etilde' 'raefsky3' 'msc10848' 'email-Enron' 'ship_001' 'lp_fit2d' 'dbir2' 'cari' 'std1_Jac3' 'Zd_Jac3')
 spada_nn=('alexnetfc2' 'resnet50fc' 'resnet50layer3_conv1' 'resnet50layer4_conv3' 'resnet50layer2_conv1' 'resnet50layer1_conv2')
+benchmark_ss=('ca-CondMat' 'poisson3Da' 'nemsemm1' 'EternityII_Etilde' 'raefsky3' 'msc10848' 'email-Enron' 'ship_001' 'lp_fit2d' 'dbir2' 'cari' 'lpi_forest6')
+benchmark_nn=('resnet50fc' 'resnet50layer3_conv1' 'resnet50layer4_conv3' 'resnet50layer2_conv1' 'resnet50layer1_conv2')
+
 echo "----Sweep suitesparse workloads----"
 echo "Use $1 on $2"
 echo "Write output to $3"
@@ -146,6 +149,14 @@ elif [[ "$2" == "spada_nn" ]]; then
     rm job2run/$1_${s}_spada_nn_job2run
     for i in "${spada_nn[@]}"; do
         echo "./target/debug/omega-sim accuratesimu $1 nn $i $4 > ${3}/spada_nn/${1}_${i}.log 2>&1" >> job2run/$1_${s}_spada_nn_job2run
+    done
+elif [[ "$2" == "benchmark" ]];  then
+    rm job2run/$1_${s}_benchmark_job2run
+    for i in "${benchmark_ss[@]}"; do
+        echo "./target/debug/spada-sim accuratesimu $1 ss $i $4 > ${3}/benchmark/${1}_${i}.log 2>&1" >> job2run/$1_${s}_benchmark_job2run
+    done
+    for i in "${benchmark_nn[@]}"; do
+        echo "./target/debug/spada-sim accuratesimu $1 nn $i $4 > ${3}/benchmark/${1}_${i}.log 2>&1" >> job2run/$1_${s}_benchmark_job2run
     done
 else
     echo "Invalid workload type $2."

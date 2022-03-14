@@ -181,7 +181,6 @@ impl SortingNetwork {
 
 #[derive(Debug, Clone)]
 pub struct MergeTree {
-    // For now wee simply assume a single-cycle sorting-network.
     elements: Vec<Vec<Vec<Element>>>,
     latency_counter: Vec<usize>,
     latency: usize,

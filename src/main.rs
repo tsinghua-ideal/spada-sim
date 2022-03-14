@@ -19,13 +19,12 @@ mod adder_tree;
 use std::cmp::min;
 
 use gemm::GEMM;
-use storage::VectorStorage;
 
 use crate::cycle_accurate_simulator::CycleAccurateSimulator;
 use crate::frontend::{parse_config, Accelerator, Cli, Simulator, WorkloadCate};
 use crate::preprocessing::{sort_by_length};
 use crate::py2rust::{load_mm_mat, load_pickled_gemms};
-use crate::storage::CsrMatStorage;
+use crate::storage::{VectorStorage, CsrMatStorage};
 use structopt::StructOpt;
 
 fn main() {
@@ -118,6 +117,6 @@ fn main() {
             }
         }
 
-        _ => panic!("Unimplemented simlator {}", cli.simulator)
+        _ => panic!("Unimplemented simulator {}", cli.simulator)
     }
 }
