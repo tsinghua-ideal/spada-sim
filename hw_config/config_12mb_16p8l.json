@@ -1,0 +1,15 @@
+{
+    "ss_filepath": "/scorpio/home/lizhiyao/spada/adaptive_sparse_accelerator/workload/suitesparse_matrices/all",
+    "nn_filepath": "/scorpio/home/lizhiyao/spada/adaptive_sparse_accelerator/workload/pickled_gemms/NN_gemms_02_01_21_31.pkl",
+    "pe_num": 16,
+    "at_num": 256,
+    "lane_num": 8,
+    "cache_size": 12582912,
+    "word_byte": 8,
+    "block_shape": [1, 10000000],
+    "mem_latency": 30,
+    "cache_latency": 0,
+    "freq": 1.0,
+    "channel": 16,
+    "bandwidth_per_channel": 8.0
+}

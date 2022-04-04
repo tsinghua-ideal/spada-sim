@@ -14,6 +14,7 @@ spada_ss=('ca-CondMat' 'poisson3Da' 'nemsemm1' 'EternityII_Etilde' 'raefsky3' 'm
 spada_nn=('alexnetfc2' 'resnet50fc' 'resnet50layer3_conv1' 'resnet50layer4_conv3' 'resnet50layer2_conv1' 'resnet50layer1_conv2')
 benchmark_ss=('ca-CondMat' 'poisson3Da' 'nemsemm1' 'EternityII_Etilde' 'raefsky3' 'msc10848' 'email-Enron' 'ship_001' 'lp_fit2d' 'dbir2' 'cari' 'lpi_forest6')
 benchmark_nn=('resnet50fc' 'resnet50layer3_conv1' 'resnet50layer4_conv3' 'resnet50layer2_conv1' 'resnet50layer1_conv2')
+bert=('bert_layer0_key' 'bert_layer0_query' 'bert_layer0_selfdense')
 
 echo "----Sweep suitesparse workloads----"
 echo "Use $1 on $2"
@@ -157,6 +158,16 @@ elif [[ "$2" == "benchmark" ]];  then
     done
     for i in "${benchmark_nn[@]}"; do
         echo "./target/debug/spada-sim accuratesimu $1 nn $i $4 > ${3}/benchmark/${1}_${i}.log 2>&1" >> job2run/$1_${s}_benchmark_job2run
+    done
+elif [[ "$2" == "benchmark_nn" ]];  then
+    rm job2run/$1_${s}_benchmark_nn_job2run
+    for i in "${benchmark_nn[@]}"; do
+        echo "./target/debug/spada-sim accuratesimu $1 nn $i $4 > ${3}/benchmark_nn/${1}_${i}.log 2>&1" >> job2run/$1_${s}_benchmark_nn_job2run
+    done
+elif [[ "$2" == "bert" ]]; then
+    rm job2run/$1_${s}_bert_job2run
+    for i in "${bert[@]}"; do
+        echo "./target/debug/spada-sim accuratesimu $1 nn $i $4 > ${3}/bert/${1}_${i}.log 2>&1" >> job2run/$1_${s}_bert_job2run
     done
 else
     echo "Invalid workload type $2."
