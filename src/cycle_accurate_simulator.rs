@@ -314,7 +314,7 @@ impl PE {
         for s in (0..self.lane_num).step_by(group_size) {
             let mut tail_flag = usize::MAX;
             for lane_idx in s..min(s+group_size, self.lane_num) {
-                // trace_println!("tail flag {} {:?}", tail_flag, self.psum_buffers[lane_idx]);
+                // println!("lane_idx: {} tail flag: {} psum_buffers: {:?}", lane_idx, tail_flag, self.psum_buffers[lane_idx]);
                 if self.psum_buffers[lane_idx].len() >= 3 {
                     tail_flag = min(tail_flag, self.psum_buffers[lane_idx][2].idx[1]);
                     // trace_println!("update_tf: >3, lane: {}, tf: {}", lane_idx, tail_flag);
@@ -358,16 +358,16 @@ impl PE {
         let left_lane = (lane_idx / 2) * 2;
         let right_lane = left_lane + 1;
         if group_size < 2
-        || self.stream_buffers[left_lane].len() <= 1
-        || self.stream_buffers[right_lane].len() <= 1
         {
             self.stream_buffers[lane_idx].pop_front()
         } else {
             let drain_num = merge_idx(&self.stream_buffers[left_lane], &self.stream_buffers[right_lane], 1);
-            if drain_num[0] > 0 {
+            if drain_num[0] > 0 && self.stream_buffers[left_lane].len() > 1 {
                 self.stream_buffers[left_lane].pop_front()
-            } else {
+            } else if drain_num[1] > 0 && self.stream_buffers[right_lane].len() > 1 {
                 self.stream_buffers[right_lane].pop_front()
+            } else {
+                self.stream_buffers[lane_idx].pop_front()
             }
         }
     }
@@ -431,6 +431,8 @@ pub struct CycleAccurateSimulator<'a> {
     pub word_cycle_chan_bw: f32,
     // Debug info.
     pub drain_cycles: Vec<usize>,
+    pub mult_util: Vec<f32>,
+    pub active_cycle: Vec<usize>,
 }
 
 impl<'a> CycleAccurateSimulator<'a> {
@@ -495,6 +497,8 @@ impl<'a> CycleAccurateSimulator<'a> {
             channel,
             word_cycle_chan_bw,
             drain_cycles: vec![0; pe_num],
+            mult_util: vec![0.0; pe_num],
+            active_cycle: vec![0; pe_num],
         }
     }
 
@@ -552,15 +556,20 @@ impl<'a> CycleAccurateSimulator<'a> {
                     if self.pes[pe_idx].mem_finish_cycle.is_none() {
                         if self.pes[pe_idx].task.is_some() {
                             let task = self.pes[pe_idx].task.as_ref().unwrap();
-                            // trace_println!("pe: {} cur_cycle: {} start_cycle: {} traffic: {} mem_cycle: {:?}",
-                            // pe_idx, self.exec_cycle, task.start_cycle, task.memory_traffic, task.start_cycle + (task.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize);
-                            // trace_println!("anchor: {:?}, shape: {:?}", self.scheduler.window_tracker[&task.window_token].anchor, self.scheduler.window_tracker[&task.window_token].shape);
+                            println!("pe: {} cur_cycle: {} start_cycle: {} traffic: {} mem_cycle: {:?}",
+                            pe_idx, self.exec_cycle, task.start_cycle, task.memory_traffic, task.start_cycle + (task.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize);
+                            trace_println!("anchor: {:?}, shape: {:?}", self.scheduler.window_tracker[&task.window_token].anchor, self.scheduler.window_tracker[&task.window_token].shape);
                             trace_println!(
                                 "cache occp: {} in {}, psum_occp: {}, b_occp: {}",
                                 self.fiber_cache.cur_num,
                                 self.fiber_cache.capability,
                                 self.fiber_cache.psum_occp,
                                 self.fiber_cache.b_occp
+                            );
+                            trace_println!("active cycle: {:?} mult_utils: {:?} avg_mult_util: {}",
+                                self.active_cycle,
+                                self.mult_util,
+                                self.mult_util.iter().sum::<f32>() / self.mult_util.len() as f32
                             );
                             if !task.merge_mode {
                                 let latency = max(self.exec_cycle - task.start_cycle, (task.memory_traffic as f32 / (self.word_cycle_chan_bw * self.channel as f32 / self.pe_num as f32)) as usize);
@@ -588,7 +597,7 @@ impl<'a> CycleAccurateSimulator<'a> {
                             if self.exec_cycle > mem_exec_cycle && self.pes[pe_idx].config_unchanged {
                                 self.drain_cycles[pe_idx] += self.exec_cycle - max(discounted_exec_cycle, mem_exec_cycle);
                             }
-                            // trace_println!("drain cycle: {:?}", self.drain_cycles[pe_idx]);
+                            trace_println!("drain cycle: {:?}", self.drain_cycles[pe_idx]);
                         }
                     }
                     // Wait to catch the pending cycle.
@@ -686,8 +695,8 @@ impl<'a> CycleAccurateSimulator<'a> {
                     let rb_num = self.pes[pe_idx].stream_buffer_size - sb_len;
                     let bs = self.stream_b_row(pe_idx, lane_idx, rb_num, self.exec_cycle);
                     // trace_print!("-stream b {:?} to {}", &bs, lane_idx);
-                    // trace_print!("stream buffer {} {:?} ", lane_idx, &self.pes[pe_idx].stream_buffers[lane_idx]);
                     self.pes[pe_idx].push_stream_buffer(lane_idx, bs);
+                    // println!("stream buffer {} {:?} rb_num: {}", lane_idx, &self.pes[pe_idx].stream_buffers[lane_idx], rb_num);
                 }
 
                 // // Pending when access a or b matrix.
@@ -723,6 +732,7 @@ impl<'a> CycleAccurateSimulator<'a> {
 
                 // New production phase.
                 // trace_print!("-Prod ");
+                let group_size = self.pes[pe_idx].task.as_ref().unwrap().group_size;
                 let mut bs = vec![];
                 for lane_idx in 0..self.lane_num {
                     // Update full flag.
@@ -740,15 +750,21 @@ impl<'a> CycleAccurateSimulator<'a> {
                 }
                 // Set bs to multiplier array.
                 let prods = self.pes[pe_idx].multiplier_array.retrieve_cs();
-                let group_size = self.pes[pe_idx].task.as_ref().unwrap().group_size;
                 self.pes[pe_idx].multiplier_array.set_bs(bs);
                 self.pes[pe_idx].multiplier_array.multiply(group_size);
+                let mut mult_in_use = 0;
                 for (lane_idx, prod) in prods.into_iter().enumerate() {
                     if prod.is_some() {
+                        mult_in_use += 1;
                         self.pes[pe_idx].push_psum_buffer(lane_idx, prod.unwrap());
                     }
                     // trace_println!("psum buffer: {} {:?} ", lane_idx, &self.pes[pe_idx].psum_buffers[lane_idx]);
                     // trace_println!("lane: {} mult_b: {:?}", lane_idx, &self.pes[pe_idx].multiplier_array.b_eles[lane_idx]);
+                }
+                let mult_util = mult_in_use as f32 / self.pes[pe_idx].lane_num as f32;
+                if !self.pes[pe_idx].idle() && !self.pes[pe_idx].task.as_ref().unwrap().merge_mode {
+                    self.mult_util[pe_idx] = (self.mult_util[pe_idx] * self.active_cycle[pe_idx] as f32 + mult_util) / (self.active_cycle[pe_idx] + 1) as f32;
+                    self.active_cycle[pe_idx] += 1;
                 }
 
                 // Collect psum phase.

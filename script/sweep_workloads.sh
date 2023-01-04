@@ -15,6 +15,12 @@ spada_nn=('alexnetfc2' 'resnet50fc' 'resnet50layer3_conv1' 'resnet50layer4_conv3
 benchmark_ss=('ca-CondMat' 'poisson3Da' 'nemsemm1' 'EternityII_Etilde' 'raefsky3' 'msc10848' 'email-Enron' 'ship_001' 'lp_fit2d' 'dbir2' 'cari' 'lpi_forest6')
 benchmark_nn=('resnet50fc' 'resnet50layer3_conv1' 'resnet50layer4_conv3' 'resnet50layer2_conv1' 'resnet50layer1_conv2')
 bert=('bert_layer0_key' 'bert_layer0_query' 'bert_layer0_selfdense')
+extend=('bas1lp' 'bibd_16_8' 'blockqp1' 'bundle1' 'Ga3As3H12' 'heart1' 'HFE18_96_in' 'jendrec1' 'nd3k' 'Trec13' 'TSOPF_FS_b162_c1' 'nd6k' 'Ge87H76')
+# large=('cit-Patents' 'hugetrace-00010' 'Hardesty3' 'GAP-road' 'HV15R')
+large=('ldoor' 'Hardesty2' 'web-Google' 'cit-Patents' 'hugetrace-00010' 'kkt_power')
+workload_ss=('hugetrace-00010' 'cit-Patents' 'kkt_power' 'web-Google' 'Hardesty2' 'ldoor' 'email-Enron' 'ca-CondMat' 'EternityII_Etilde' 'dbir2' 'poisson3Da' 'ship_001' 'raefsky3' 'nemsemm1' 'msc10848' 'lpi_forest6' 'cari' 'lp_fit2d')
+workload_nn=('alexnetfc2' 'resnet50fc' 'resnet50layer3_conv1' 'resnet50layer4_conv3' 'resnet50layer2_conv1' 'resnet50layer1_conv2')
+workload_bert=('bert_layer0_key' 'bert_layer0_query' 'bert_layer0_selfdense')
 
 echo "----Sweep suitesparse workloads----"
 echo "Use $1 on $2"
@@ -168,6 +174,31 @@ elif [[ "$2" == "bert" ]]; then
     rm job2run/$1_${s}_bert_job2run
     for i in "${bert[@]}"; do
         echo "./target/debug/spada-sim accuratesimu $1 nn $i $4 > ${3}/bert/${1}_${i}.log 2>&1" >> job2run/$1_${s}_bert_job2run
+    done
+elif [[ "$2" == "extend" ]]; then
+    rm job2run/$1_${s}_extend_job2run
+    for i in "${extend[@]}"; do
+        echo "./target/debug/spada-sim accuratesimu $1 ss $i $4 > ${3}/extend/${1}_${i}.log 2>&1" >> job2run/$1_${s}_extend_job2run
+    done
+elif [[ "$2" == "large" ]]; then
+    rm job2run/$1_${s}_large_job2run
+    for i in "${large[@]}"; do
+        echo "./target/debug/spada-sim accuratesimu $1 ss $i $4 > ${3}/large/${1}_${i}.log 2>&1" >> job2run/$1_${s}_large_job2run
+    done
+elif [[ "$2" == "workload_ss" ]]; then
+    rm job2run/$1_${s}_workload_ss_job2run
+    for i in "${workload_ss[@]}"; do
+        echo "./target/debug/spada-sim accuratesimu $1 ss $i $4 > ${3}/workload_ss/${1}_${i}.log 2>&1" >> job2run/$1_${s}_workload_ss_job2run
+    done
+elif [[ "$2" == "workload_nn" ]]; then
+    rm job2run/$1_${s}_workload_nn_job2run
+    for i in "${workload_nn[@]}"; do
+        echo "./target/debug/spada-sim accuratesimu $1 nn $i $4 > ${3}/workload_nn/${1}_${i}.log 2>&1" >> job2run/$1_${s}_workload_nn_job2run
+    done
+elif [[ "$2" == "workload_bert" ]]; then
+    rm job2run/$1_${s}_workload_bert_job2run
+    for i in "${workload_bert[@]}"; do
+        echo "./target/debug/spada-sim accuratesimu $1 nn $i $4 > ${3}/workload_bert/${1}_${i}.log 2>&1" >> job2run/$1_${s}_workload_bert_job2run
     done
 else
     echo "Invalid workload type $2."

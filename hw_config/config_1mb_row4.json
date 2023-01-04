@@ -1,8 +1,9 @@
 {
-    "ss_filepath": "../adaptive_sparse_accelerator/workload/suitesparse_matrices/all",
+    "ss_filepath": "/scorpio/home/lizhiyao/spada/adaptive_sparse_accelerator/workload/suitesparse_matrices/all",
     "nn_filepath": "../adaptive_sparse_accelerator/workload/pickled_gemms/NN_gemms_02_01_21_31.pkl",
     "desired_filepath": "../adaptive_sparse_accelerator/workload/pickled_gemms/Desired_gemms_06_05_11_08.pkl",
     "pe_num": 2,
+    "at_num": 16,
     "lane_num": 8,
     "cache_size": 1572864,
     "word_byte": 8,
