@@ -1,10 +1,10 @@
 #![feature(drain_filter)]
 #![feature(hash_drain_filter)]
 
+mod adder_tree;
 mod block_topo_tracker;
 mod colwise_irr_adjust;
 mod colwise_reg_adjust;
-mod simulator;
 mod frontend;
 mod gemm;
 mod preprocessing;
@@ -12,19 +12,19 @@ mod py2rust;
 mod rowwise_adjust;
 mod rowwise_perf_adjust;
 mod scheduler;
+mod simulator;
 mod storage;
 mod util;
-mod adder_tree;
 
 use std::cmp::min;
 
 use gemm::GEMM;
 
-use crate::simulator::Simulator;
 use crate::frontend::{parse_config, Accelerator, Cli, Mode, WorkloadCate};
-use crate::preprocessing::{sort_by_length};
+use crate::preprocessing::sort_by_length;
 use crate::py2rust::{load_mm_mat, load_pickled_gemms};
-use crate::storage::{VectorStorage, CsrMatStorage};
+use crate::simulator::Simulator;
+use crate::storage::{CsrMatStorage, VectorStorage};
 use structopt::StructOpt;
 
 fn main() {
@@ -116,6 +116,6 @@ fn main() {
             }
         }
 
-        _ => panic!("Unimplemented simulator {}", cli.simulator)
+        _ => panic!("Unimplemented simulator {}", cli.simulator),
     }
 }

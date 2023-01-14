@@ -14,11 +14,11 @@ macro_rules! trace_print {
 #[cfg(not(feature = "trace_exec"))]
 #[macro_export]
 macro_rules! trace_print {
-    ($( $args:expr ),*) => {}
+    ($( $args:expr ),*) => {};
 }
 
 #[cfg(not(feature = "trace_exec"))]
 #[macro_export]
 macro_rules! trace_println {
-    ($( $args:expr ),*) => {}
+    ($( $args:expr ),*) => {};
 }

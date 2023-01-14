@@ -1,5 +1,5 @@
-use std::cmp::{max, min};
 use crate::trace_println;
+use std::cmp::{max, min};
 
 pub struct BlockTopoTracker {
     pub row_s_list: Vec<usize>,
@@ -19,14 +19,16 @@ impl BlockTopoTracker {
     pub fn add_block(&mut self, token: usize, anchor: [usize; 2]) {
         match self.row_s_list.binary_search(&anchor[0]) {
             Ok(r) => {
-                let c = self.col_s_list[r].binary_search(&anchor[1]).unwrap_or_else(|x| x);
+                let c = self.col_s_list[r]
+                    .binary_search(&anchor[1])
+                    .unwrap_or_else(|x| x);
                 self.col_s_list[r].insert(c, anchor[1]);
                 self.token_list[r].insert(c, token);
             }
             Err(r) => {
                 self.row_s_list.insert(r, anchor[0]);
-                self.col_s_list.insert(r, vec![anchor[1],]);
-                self.token_list.insert(r, vec![token,]);
+                self.col_s_list.insert(r, vec![anchor[1]]);
+                self.token_list.insert(r, vec![token]);
             }
         }
     }
@@ -36,9 +38,10 @@ impl BlockTopoTracker {
         if self.row_s_list.len() == 0 {
             return None;
         }
-        let mut cur_row_pos = self.row_s_list
-            .binary_search(&cur_block[0])
-            .map_or_else(|x| min(max(self.row_s_list.len() as i32 - 1, 0), x as i32), |x| x as i32);
+        let mut cur_row_pos = self.row_s_list.binary_search(&cur_block[0]).map_or_else(
+            |x| min(max(self.row_s_list.len() as i32 - 1, 0), x as i32),
+            |x| x as i32,
+        );
         while cur_row_pos >= 0 {
             trace_println!("cur_block: {:?} cur_row_pos: {}", cur_block, cur_row_pos);
             let row_pos = cur_row_pos as usize;
@@ -64,9 +67,10 @@ impl BlockTopoTracker {
         if self.row_s_list.len() == 0 {
             return None;
         }
-        let cur_row_pos = self.row_s_list
-            .binary_search(&cur_block[0])
-            .map_or_else(|x| x as i32, |x|min(max(self.row_s_list.len() as i32 - 1, 0), x as i32));
+        let cur_row_pos = self.row_s_list.binary_search(&cur_block[0]).map_or_else(
+            |x| x as i32,
+            |x| min(max(self.row_s_list.len() as i32 - 1, 0), x as i32),
+        );
         if cur_row_pos == 0 {
             return None;
         }
@@ -78,7 +82,9 @@ impl BlockTopoTracker {
                 if c == self.col_s_list[row_pos].len() {
                     c - 1
                 } else {
-                    if self.col_s_list[row_pos][c] - cur_block[1] < cur_block[1] - self.col_s_list[row_pos][c-1] {
+                    if self.col_s_list[row_pos][c] - cur_block[1]
+                        < cur_block[1] - self.col_s_list[row_pos][c - 1]
+                    {
                         c
                     } else {
                         c - 1

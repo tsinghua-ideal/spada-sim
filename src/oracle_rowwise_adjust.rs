@@ -1,12 +1,11 @@
+use std::cmp::Reverse;
 use std::cmp::{max, min};
 use std::collections::{BinaryHeap, HashMap};
-use std::cmp::Reverse;
 
 use crate::block_topo_tracker::BlockTopoTracker;
 use crate::scheduler::BlockTracker;
 use crate::storage::CsrMatStorage;
 use crate::trace_println;
-
 
 pub struct SimplePriorityCache {
     pub rowmap: HashMap<usize, usize>, // b row index -> b row size
@@ -24,5 +23,4 @@ pub struct OracleRowwiseBlockInfo {
 pub struct OracleRowwiseAdjustTracker {
     pub block_info: HashMap<usize, OracleRowwiseBlockInfo>, // block_token -> oracle rowwise block info
     pub lane_num: usize,
-    
 }

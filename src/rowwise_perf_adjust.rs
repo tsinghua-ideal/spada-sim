@@ -118,11 +118,7 @@ impl RowwiseLatencyAdjustTracker {
         }
     }
 
-    pub fn adjust_block_shape(
-        &mut self,
-        row_s: usize,
-        block_shape: [usize; 2],
-    ) -> [usize; 2] {
+    pub fn adjust_block_shape(&mut self, row_s: usize, block_shape: [usize; 2]) -> [usize; 2] {
         let mut block_shape = block_shape;
         // trace_println!("-Rowwise adjust");
         // Separately treat wide groups and narrow groups.
@@ -132,7 +128,10 @@ impl RowwiseLatencyAdjustTracker {
 
         // First check if the row group changed and prepare for sampling.
         if self.a_group.rgmap[&row_s] != self.row_group
-        || !self.a_group.groups[self.row_group].latency_num.contains_key(&block_shape[0]) {
+            || !self.a_group.groups[self.row_group]
+                .latency_num
+                .contains_key(&block_shape[0])
+        {
             // Start from row_num = 1 to touch the distribution.
             block_shape[0] = 1;
             self.row_group = self.a_group.rgmap[&row_s];
@@ -165,7 +164,8 @@ impl RowwiseLatencyAdjustTracker {
                             .latency_num
                             .get_mut(&cur_row_num)
                         {
-                            let div_latency = latency_num[0] as f32 / (latency_num[1] as f32 + 0.0001);
+                            let div_latency =
+                                latency_num[0] as f32 / (latency_num[1] as f32 + 0.0001);
                             if div_latency < min_latency {
                                 min_latency = div_latency;
                                 self.set_row_num = cur_row_num;
@@ -197,12 +197,15 @@ impl RowwiseLatencyAdjustTracker {
         } else {
             // Treat the narrow groups.
             let cur_latency_num = cur_gi.latency_num.get(&block_shape[0]);
-            let half_latency_num = cur_gi.latency_num.get(&(block_shape[0]/2));
+            let half_latency_num = cur_gi.latency_num.get(&(block_shape[0] / 2));
 
             if self.set_row_num == usize::MAX
-            && (half_latency_num.is_none()
-            || cur_latency_num.as_ref().unwrap()[0] as f32 / (cur_latency_num.as_ref().unwrap()[1] as f32 + 0.0001)
-            < half_latency_num.as_ref().unwrap()[0] as f32 / (cur_latency_num.as_ref().unwrap()[1] as f32 + 0.0001)) {
+                && (half_latency_num.is_none()
+                    || cur_latency_num.as_ref().unwrap()[0] as f32
+                        / (cur_latency_num.as_ref().unwrap()[1] as f32 + 0.0001)
+                        < half_latency_num.as_ref().unwrap()[0] as f32
+                            / (cur_latency_num.as_ref().unwrap()[1] as f32 + 0.0001))
+            {
                 block_row_num *= 2;
             } else {
                 let mut min_div_latency = f32::MAX;
@@ -218,7 +221,7 @@ impl RowwiseLatencyAdjustTracker {
         }
 
         while block_row_num > 1
-        && (row_s + block_row_num >= self.a_group.groups[self.row_group].row_range[1])
+            && (row_s + block_row_num >= self.a_group.groups[self.row_group].row_range[1])
         {
             block_row_num /= 2;
         }

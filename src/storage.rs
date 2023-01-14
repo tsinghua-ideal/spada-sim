@@ -1,16 +1,14 @@
 use crate::gemm::GEMM;
 use crate::trace_println;
-use itertools::{izip};
+use itertools::izip;
 use std::{
     cmp::{max, min, Reverse},
     collections::{BinaryHeap, HashMap},
-    fmt,
-    usize,
+    fmt, usize,
 };
 
 #[derive(Debug, Clone)]
 pub enum StorageError {
-
     ReadEmptyRowError(String),
     ReadOverBoundError(String),
 }
@@ -107,7 +105,7 @@ impl CsrRow {
             if self.size() > 0 {
                 self.consumed += 1;
             } else {
-                return Err("Empty csrrow!")
+                return Err("Empty csrrow!");
             }
         }
         Ok(())
@@ -181,11 +179,8 @@ impl StorageAPI for CsrMatStorage {
         let s = cur_row_pos + col_s;
         let t = s + ele_num;
         if (s <= t) && (t <= end_row_pos) {
-            let csrrow = CsrRow::new_from_data(
-                rawp,
-                self.data[s..t].to_vec(),
-                self.indices[s..t].to_vec(),
-            );
+            let csrrow =
+                CsrRow::new_from_data(rawp, self.data[s..t].to_vec(), self.indices[s..t].to_vec());
             if self.track_count {
                 self.read_count += csrrow.size();
             }
@@ -266,7 +261,6 @@ impl CsrMatStorage {
             return self.indptr[rowid];
         }
     }
-
 
     pub fn row_num(&self) -> usize {
         self.indptr.len() - 1
@@ -446,10 +440,7 @@ impl VectorStorage {
         }
     }
 
-    pub fn contains_row(
-        &self,
-        row_idx: &usize,
-    ) -> bool {
+    pub fn contains_row(&self, row_idx: &usize) -> bool {
         self.data.contains_key(row_idx)
     }
 
@@ -534,7 +525,7 @@ impl<'a> LatencyPriorityCache<'a> {
         let csrrow = self.rowmap.remove(rowptr);
         csrrow
     }
-    
+
     fn rowmap_consume(&mut self, rowptr: &usize, num: usize) {
         let mut consumed = false;
         self.rowmap.entry(*rowptr).and_modify(|r| {
@@ -614,10 +605,15 @@ impl<'a> LatencyPriorityCache<'a> {
             // );
             let poprow: usize;
             if self.b_occp < space_required {
-                poprow = *self.rowmap.keys().filter(|&&rowid| self.is_psum_row(rowid) && rowid != addr).next().unwrap();
+                poprow = *self
+                    .rowmap
+                    .keys()
+                    .filter(|&&rowid| self.is_psum_row(rowid) && rowid != addr)
+                    .next()
+                    .unwrap();
             } else {
                 loop {
-                    let popid = self.priority_queue_pop(vec![addr,]).unwrap();
+                    let popid = self.priority_queue_pop(vec![addr]).unwrap();
                     // trace_println!("freeup_space: popid: {:?}", popid);
                     if self.valid_pq_row_dict[&popid[1]] == popid[0]
                         && self.rowmap.contains_key(&popid[1])
@@ -635,7 +631,11 @@ impl<'a> LatencyPriorityCache<'a> {
                     self.psum_evict_count += popped_csrrow.size();
                 }
                 self.psum_occp -= popped_csrrow.size();
-                trace_println!("*psum freeup: - {} -> {}", popped_csrrow.size(), self.psum_occp);
+                trace_println!(
+                    "*psum freeup: - {} -> {}",
+                    popped_csrrow.size(),
+                    self.psum_occp
+                );
                 self.psum_mem.write(&mut vec![popped_csrrow]).unwrap();
             } else {
                 let evict_size = self.rowmap_remove(&poprow).unwrap().size();
@@ -664,7 +664,11 @@ impl<'a> LatencyPriorityCache<'a> {
             self.cur_num -= popped_csrrow.size();
             if self.is_psum_row(rowid) {
                 self.psum_occp -= popped_csrrow.size();
-                trace_println!("*psum swapout: - {} -> {}", popped_csrrow.size(), self.psum_occp);
+                trace_println!(
+                    "*psum swapout: - {} -> {}",
+                    popped_csrrow.size(),
+                    self.psum_occp
+                );
             } else {
                 self.b_occp -= popped_csrrow.size();
             }
@@ -702,7 +706,7 @@ impl<'a> LatencyPriorityCache<'a> {
 
         // If swapped out, direct write the partial psum into psum memory.
         } else if self.psum_mem.contains_row(&addr) {
-            self.psum_mem.write(&mut vec![csrrow,]).unwrap();
+            self.psum_mem.write(&mut vec![csrrow]).unwrap();
 
         // Otherwise, alloc in cache.
         } else {
@@ -794,9 +798,7 @@ impl<'a> LatencyPriorityCache<'a> {
                         }
                         self.write(csrrow.clone(), a_loc);
                         let elements = csrrow.as_element_vec();
-                        return Some(
-                            elements[col_s..min(col_s + num, elements.len())].to_vec(),
-                        );
+                        return Some(elements[col_s..min(col_s + num, elements.len())].to_vec());
                     }
                     Err(_) => panic!("{} should be in psum mem but not found!", a_loc[1]),
                 }
@@ -808,9 +810,7 @@ impl<'a> LatencyPriorityCache<'a> {
                         }
                         self.write(csrrow.clone(), a_loc);
                         let elements = csrrow.as_element_vec();
-                        return Some(
-                            elements[col_s..min(col_s + num, elements.len())].to_vec(),
-                        );
+                        return Some(elements[col_s..min(col_s + num, elements.len())].to_vec());
                     }
                     Err(_) => panic!("{} should be in b mem but not found!", a_loc[1]),
                 }
@@ -872,7 +872,12 @@ impl<'a> LatencyPriorityCache<'a> {
             self.cur_num -= ele_size;
             if self.is_psum_row(a_loc[1]) {
                 self.psum_occp -= ele_size;
-                trace_println!("*psum {} consume: - {} -> {}", a_loc[1], ele_size, self.psum_occp);
+                trace_println!(
+                    "*psum {} consume: - {} -> {}",
+                    a_loc[1],
+                    ele_size,
+                    self.psum_occp
+                );
             } else {
                 self.b_occp -= ele_size;
             }
@@ -923,7 +928,11 @@ impl<'a> LatencyPriorityCache<'a> {
             self.cur_num += element_size;
             if self.is_psum_row(addr) {
                 self.psum_occp += element_size;
-                trace_println!("*psum append element: + {} -> {}", element_size, self.psum_occp);
+                trace_println!(
+                    "*psum append element: + {} -> {}",
+                    element_size,
+                    self.psum_occp
+                );
             } else {
                 self.b_occp += element_size;
             }
@@ -950,7 +959,11 @@ impl<'a> LatencyPriorityCache<'a> {
             self.cur_num += element_size;
             if self.is_psum_row(addr) {
                 self.psum_occp += element_size;
-                trace_println!("*psum append element: + {} -> {}", element_size, self.psum_occp);
+                trace_println!(
+                    "*psum append element: + {} -> {}",
+                    element_size,
+                    self.psum_occp
+                );
             } else {
                 self.b_occp += element_size;
             }
@@ -965,7 +978,11 @@ impl<'a> LatencyPriorityCache<'a> {
         }
 
         if self.rowmap.contains_key(&addr) {
-            trace_println!("append psum {} -> {}", &addr, self.rowmap.get(&addr).unwrap().size());
+            trace_println!(
+                "append psum {} -> {}",
+                &addr,
+                self.rowmap.get(&addr).unwrap().size()
+            );
         }
     }
 
@@ -980,6 +997,11 @@ impl<'a> LatencyPriorityCache<'a> {
         }
         trace_println!("");
         trace_println!("Psum sum: {}", psum_sum);
-        assert!(self.psum_occp == psum_sum, "Unequal psum occp {}, {}", self.psum_occp, psum_sum);
+        assert!(
+            self.psum_occp == psum_sum,
+            "Unequal psum occp {}, {}",
+            self.psum_occp,
+            psum_sum
+        );
     }
 }
