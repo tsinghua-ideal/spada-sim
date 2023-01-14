@@ -1,5 +1,4 @@
 use crate::block_topo_tracker::BlockTopoTracker;
-use crate::trace_println;
 use std::cmp::max;
 use std::collections::HashMap;
 
@@ -90,15 +89,6 @@ impl ColwiseIrrBlockAdjustTracker {
             let n2_ele_size = n2_block_info.a_ele_num;
             let n2_cost = (n2_block_info.miss_size + n2_block_info.psum_rw_size[0]) * 100
                 + n2_block_info.psum_rw_size[1];
-
-            // trace_println!(
-            //     "block anchor: {:?} n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
-            //     &block_anchor,
-            //     n1_cost,
-            //     n1_ele_size,
-            //     n2_cost,
-            //     n2_ele_size
-            // );
 
             let mut blk_h =
                 if (n1_cost as f32 / n1_ele_size as f32) < (n2_cost as f32 / n2_ele_size as f32) {

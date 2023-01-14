@@ -1,6 +1,6 @@
 {
-    "ss_filepath": "/scorpio/home/lizhiyao/spada/adaptive_sparse_accelerator/workload/suitesparse_matrices/all",
-    "nn_filepath": "/scorpio/home/lizhiyao/spada/bert_pruning/bert_gemm.pkl",
+    "ss_filepath": "./matrices",
+    "nn_filepath": "./matrices/nn_gemm.pkl",
     "pe_num": 2,
     "at_num": 16,
     "lane_num": 8,

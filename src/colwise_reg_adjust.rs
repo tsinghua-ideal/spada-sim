@@ -1,5 +1,4 @@
 use crate::block_topo_tracker::BlockTopoTracker;
-use crate::trace_println;
 use std::cmp::{max, min};
 use std::collections::HashMap;
 
@@ -86,14 +85,6 @@ impl ColwiseRegBlockAdjustTracker {
             + n2_block_info.psum_rw_size[1];
         let n2_win_h = self.window_shape[&n2_token][0];
 
-        // trace_println!(
-        //     "block anchor: {:?} n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
-        //     &block_anchor,
-        //     n1_cost,
-        //     n1_ele_size,
-        //     n2_cost,
-        //     n2_ele_size
-        // );
         let mut win_h =
             if (n1_cost as f32 / n1_ele_size as f32) <= (n2_cost as f32 / n2_ele_size as f32) {
                 if n1_win_h >= n2_win_h {

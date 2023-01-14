@@ -130,12 +130,6 @@ impl RowwiseLatencyAdjustTracker {
         let sample_num = 4;
         let mut block_row_num = 1;
 
-        // trace_println!(
-        //     "rgmap: {} cur_group: {}",
-        //     self.a_group.rgmap[&row_s],
-        //     self.row_group
-        // );
-
         // First check if the row group changed and prepare for sampling.
         if self.a_group.rgmap[&row_s] != self.row_group
         || !self.a_group.groups[self.row_group].latency_num.contains_key(&block_shape[0]) {
@@ -158,9 +152,7 @@ impl RowwiseLatencyAdjustTracker {
         }
 
         let cur_gi = &self.a_group.groups[self.row_group];
-        // trace_println!("cur_gi: {:?}", &cur_gi);
         if cur_gi.row_range[1] - cur_gi.row_range[0] > group_diviser {
-            // println!("latency_num: {:?}", &self.a_group.groups[self.row_group].latency_num);
             // Treat the wide groups.
             if row_s >= *self.sampling_bounds.last().unwrap() {
                 if self.set_row_num == usize::MAX {
@@ -202,11 +194,6 @@ impl RowwiseLatencyAdjustTracker {
                     Err(idx) => 2usize.pow(idx as u32),
                 };
             }
-            // trace_println!(
-            //     "group_range {:?} cost num: {:?}",
-            //     &self.a_group.groups[self.row_group].row_range,
-            //     self.a_group.groups[self.row_group].latency_num
-            // );
         } else {
             // Treat the narrow groups.
             let cur_latency_num = cur_gi.latency_num.get(&block_shape[0]);

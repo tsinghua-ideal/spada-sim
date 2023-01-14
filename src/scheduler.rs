@@ -7,12 +7,11 @@ use crate::adder_tree::AdderTree;
 use crate::block_topo_tracker::BlockTopoTracker;
 use crate::colwise_irr_adjust::{ColwiseIrrBlockAdjustTracker, ColwiseIrrBlockInfo};
 use crate::colwise_reg_adjust::{ColwiseRegBlockAdjustTracker, ColwiseRegBlockInfo};
-use crate::cycle_accurate_simulator::PE;
+use crate::simulator::PE;
 use crate::frontend::Accelerator;
 use crate::rowwise_adjust::{RowwiseAdjustTracker, RowwiseBlockInfo};
 use crate::rowwise_perf_adjust::{RowwiseLatencyAdjustTracker, RowwiseLatencyBlockInfo};
 use crate::storage::{CsrMatStorage, Element};
-use crate::{trace_println};
 use crate::storage::LatencyPriorityCache;
 
 #[derive(Debug, Clone)]
@@ -238,18 +237,6 @@ impl Scheduler {
         a_matrix: &mut CsrMatStorage,
         cur_cycle: usize,
     ) -> Option<(usize, Task)> {
-        // // Prior to merge task.
-        // if let Some(task) = self.merge_task(cur_cycle) {
-        //     if pe.task.is_some() && !pe.task.as_ref().unwrap().merge_mode {
-        //         self.staged_tasks[pe.pe_idx] = mem::replace(&mut pe.task, None);
-        //     }
-        //     return Some((0, task));
-        // }
-        // // Pick up staged task.
-        // else if self.staged_tasks[pe.pe_idx].is_some() {
-        //     pe.task = mem::replace(&mut self.staged_tasks[pe.pe_idx], None);
-        // }
-
         // If previous block is finished, try assign the undone latest block, or alloc a new block.
         if pe.task.is_none() || self.is_block_finished(pe.task.as_ref().unwrap().block_token) {
             if self.latest_block_token != usize::MAX
@@ -281,11 +268,6 @@ impl Scheduler {
 
     pub fn is_block_finished(&mut self, block_token: usize) -> bool {
         let block_tracker = self.block_tracker.get(&block_token).unwrap();
-        // trace_println!(
-        //     "block_tracker: {:?}, {:?}",
-        //     &block_tracker.a_cols_assigned,
-        //     &block_tracker.a_cols_num
-        // );
         for (c, l) in block_tracker
             .a_cols_assigned
             .iter()
@@ -312,7 +294,6 @@ impl Scheduler {
 
     pub fn next_block(&mut self) -> Option<usize> {
         loop {
-            // trace_println!("row_s: {}, col_s: {}, block_shape: {:?}", self.row_s, self.col_s, self.block_shape);
             // Initial adjust of block.
             if self.row_s == usize::MAX && self.col_s == usize::MAX {
                 self.row_s = 0;
@@ -401,11 +382,6 @@ impl Scheduler {
         let mut pnum = 0;
 
         // If `lane_num / 2` pairs of psums are found, the a merge block is ready.
-        // trace_println!("output_tracker: {:?}",
-        //     &self.output_tracker
-        //     .iter()
-        //     .filter(|(_, v)| v.len() > 1)
-        //     .collect::<Vec<_>>());
         for psum_addrs in self.output_tracker.values() {
             if pnum >= self.lane_num / 2 {
                 break;
@@ -580,14 +556,6 @@ impl Scheduler {
             let ele_len = element.len();
             // Increase assigned a col elements.
             let block_tracker = self.block_tracker.get_mut(&block_token).unwrap();
-            // trace_println!("a_cols_assigned: {:?}", block_tracker.a_cols_assigned);
-            // trace_println!(
-            //     "win_anchor: {:?}, win_shape: {:?}, block_anchor: {:?}, block_shape: {:?}",
-            //     &window_anchor,
-            //     &window_shape,
-            //     &block_anchor,
-            //     &block_tracker.shape
-            // );
             block_tracker.a_cols_assigned[r_idx - block_anchor[0]] += ele_len;
             for mut e in element {
                 lane2idx.push(Some(e.idx));
@@ -825,16 +793,6 @@ impl Scheduler {
         // Config block topo tracker.
         self.block_topo_tracker.add_block(token, block_anchor);
     }
-
-    // pub fn update_produced_a_cols(&mut self, block_token: usize) {
-    //     let block = &self.block_tracker[&block_token];
-    //     for (ofst, a_col_num) in block.a_cols_num.iter().enumerate() {
-    //         self.a_cols_produced
-    //             .entry(block.anchor[0]+ofst)
-    //             .or_default()
-    //             .add_assign(a_col_num);
-    //     }
-    // }
 
     pub fn assign_in_cache_merge_task(
         &mut self,

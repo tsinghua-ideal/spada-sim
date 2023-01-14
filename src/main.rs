@@ -4,7 +4,7 @@
 mod block_topo_tracker;
 mod colwise_irr_adjust;
 mod colwise_reg_adjust;
-mod cycle_accurate_simulator;
+mod simulator;
 mod frontend;
 mod gemm;
 mod preprocessing;
@@ -20,8 +20,8 @@ use std::cmp::min;
 
 use gemm::GEMM;
 
-use crate::cycle_accurate_simulator::CycleAccurateSimulator;
-use crate::frontend::{parse_config, Accelerator, Cli, Simulator, WorkloadCate};
+use crate::simulator::Simulator;
+use crate::frontend::{parse_config, Accelerator, Cli, Mode, WorkloadCate};
 use crate::preprocessing::{sort_by_length};
 use crate::py2rust::{load_mm_mat, load_pickled_gemms};
 use crate::storage::{VectorStorage, CsrMatStorage};
@@ -51,7 +51,7 @@ fn main() {
     );
 
     match cli.simulator {
-        Simulator::AccurateSimu => {
+        Mode::AccurateSimu => {
             // Cycle-accurate simulator.
             let (mut dram_a, mut dram_b) = CsrMatStorage::init_with_gemm(gemm);
             let mut dram_psum = VectorStorage::new();
@@ -71,7 +71,7 @@ fn main() {
                 Accelerator::Spada => spada_config.block_shape,
             };
 
-            let mut cycle_simu = CycleAccurateSimulator::new(
+            let mut cycle_simu = Simulator::new(
                 spada_config.pe_num,
                 spada_config.at_num,
                 spada_config.lane_num,
@@ -109,7 +109,6 @@ fn main() {
                 "Cache count: read {} write {}",
                 cache_count[0], cache_count[1]
             );
-            println!("Drained discount cycle: {:?}", cycle_simu.drain_cycles);
 
             println!("-----Output product matrix");
             for idx in 0..min(result.len(), 10) {

@@ -131,17 +131,10 @@ impl RowwiseAdjustTracker {
         a_row_lens: &Vec<usize>,
     ) -> [usize; 2] {
         let mut block_shape = block_shape;
-        // trace_println!("-Rowwise adjust");
         // Separately treat wide groups and narrow groups.
         let group_diviser = 128;
         let sample_num = 4;
         let mut min_row_num;
-
-        // trace_println!(
-        //     "rgmap: {} cur_group: {}",
-        //     self.a_group.rgmap[&row_s],
-        //     self.row_group
-        // );
 
         // First check if the row group changed and prepare for sampling.
         if self.a_group.rgmap[&row_s] != self.row_group {
@@ -212,11 +205,6 @@ impl RowwiseAdjustTracker {
             {
                 min_row_num /= 2;
             }
-            // trace_println!(
-            //     "group_range {:?} cost num: {:?}",
-            //     &self.a_group.groups[self.row_group].row_range,
-            //     self.a_group.groups[self.row_group].cost_num
-            // );
             block_shape[0] = min_row_num;
         } else {
             // Treat the narrow groups.
@@ -244,15 +232,6 @@ impl RowwiseAdjustTracker {
                 + self.block_info[&n2_token].psum_rw_size[0])
                 * 100
                 + self.block_info[&n2_token].psum_rw_size[1];
-
-            // trace_println!(
-            //     "group_range {:?} n1_cost: {}, n1_ele_size: {}, n2_cost: {}, n2_ele_size: {}",
-            //     &self.a_group.groups[self.row_group].row_range,
-            //     n1_cost,
-            //     n1_ele_size,
-            //     n2_cost,
-            //     n2_ele_size
-            // );
 
             if (n1_cost as f32 / n1_ele_size as f32) <= (n2_cost as f32 / n2_ele_size as f32) {
                 if n1_row_num >= n2_row_num {

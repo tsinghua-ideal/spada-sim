@@ -24,7 +24,7 @@ pub struct OmegaConfig {
 
 arg_enum! {
     #[derive(Debug)]
-    pub enum Simulator {
+    pub enum Mode {
         AccurateSimu,
         TrafficModel,
         BReuseCounter,
@@ -52,8 +52,8 @@ arg_enum! {
 #[derive(Debug, StructOpt)]
 pub struct Cli {
     /// The simulator to use.
-    #[structopt(possible_values=&Simulator::variants(), case_insensitive=true)]
-    pub simulator: Simulator,
+    #[structopt(possible_values=&Mode::variants(), case_insensitive=true)]
+    pub simulator: Mode,
 
     /// The accelerator to simulate.
     #[structopt(possible_values=&Accelerator::variants(), case_insensitive=true)]
@@ -75,6 +75,7 @@ pub struct Cli {
 }
 
 pub fn parse_config(config_fp: &str) -> Result<OmegaConfig, Box<dyn Error>> {
+    println!("{}", config_fp);
     let config_fp = Path::new(config_fp);
     let file = File::open(config_fp)?;
     let reader = BufReader::new(file);
