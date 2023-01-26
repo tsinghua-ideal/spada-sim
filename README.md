@@ -22,3 +22,10 @@ First ensure the created python virtual environment is activated. The following 
 ```bash
 (spadaenv) $ ./target/debug/spada-sim accuratesimu spada ss cari config/config_1mb_row1.json
 ```
+## Reference
+
+If you use this tool in your research, please kindly cite the following paper.
+
+Zhiyao Li, Jiaxiang Li, Taijie Chen, Dimin Niu, Hongzhong Zheng, Yuan Xie, and Mingyu Gao.
+Spada: Accelerating Sparse Matrix Multiplication with Adaptive Dataflow.
+In *Proceedings of the 28th International Conference on Architectural Support for Programming Languages and Operating Systems* (ASPLOS), 2023.
